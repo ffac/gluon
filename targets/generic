@@ -51,6 +51,8 @@ if [ "$GLUON_DEBUG" = 1 ]; then
 	config '# CONFIG_USE_SSTRIP is not set'
 fi
 
+try_config 'CONFIG_TARGET_ROOTFS_PARTSIZE=44'
+try_config 'CONFIG_TARGET_KERNEL_PARTSIZE=8'
 
 packages '-odhcpd-ipv6only' '-ppp' '-ppp-mod-pppoe' '-wpad-mini'
 packages 'gluon-core' 'ip6tables' 'hostapd-mini'
