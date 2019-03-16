@@ -1,0 +1,61 @@
+From: Jan Niehusmann <jan@gondor.com>
+Date: Sat, 16 Mar 2019 20:03:40 +0100
+Subject: sysupgrade: check for sufficiently large disk device
+
+diff --git a/target/linux/brcm2708/base-files/lib/upgrade/platform.sh b/target/linux/brcm2708/base-files/lib/upgrade/platform.sh
+index b9cd8d282fe2c521f9f64d98e06caabd6a30b4c2..c44b66f3fce65696e9bf4d83dbcbbba50bbf5b59 100644
+--- a/target/linux/brcm2708/base-files/lib/upgrade/platform.sh
++++ b/target/linux/brcm2708/base-files/lib/upgrade/platform.sh
+@@ -21,6 +21,14 @@ platform_check_image() {
+ 
+ 	get_partitions /tmp/image.bs image
+ 
++	imagesize="$(cat /tmp/partmap.image  | tail -n 1 | ( read i start size ; echo $((start + size)) ) )"
++	devicesize="$(cat /sys/block/$diskdev/size)"
++
++	if [ $imagesize -gt $devicesize ]; then
++		echo "Image size $imagesize bigger than device size $devicesize. Aborting."
++		exit 1
++	fi
++
+ 	#compare tables
+ 	diff="$(grep -F -x -v -f /tmp/partmap.bootdisk /tmp/partmap.image)"
+ 
+diff --git a/target/linux/sunxi/base-files/lib/upgrade/platform.sh b/target/linux/sunxi/base-files/lib/upgrade/platform.sh
+index 88ef4790e9c1452f8ce57fe1c265ce47810830ee..6b52ce60f398653f90f965df2fd35d49f50085b2 100644
+--- a/target/linux/sunxi/base-files/lib/upgrade/platform.sh
++++ b/target/linux/sunxi/base-files/lib/upgrade/platform.sh
+@@ -13,6 +13,14 @@ platform_check_image() {
+ 
+ 	get_partitions /tmp/image.bs image
+ 
++	imagesize="$(cat /tmp/partmap.image  | tail -n 1 | ( read i start size ; echo $((start + size)) ) )"
++	devicesize="$(cat /sys/block/$diskdev/size)"
++
++	if [ $imagesize -gt $devicesize ]; then
++		echo "Image size $imagesize bigger than device size $devicesize. Aborting."
++		exit 1
++	fi
++
+ 	#compare tables
+ 	diff="$(grep -F -x -v -f /tmp/partmap.bootdisk /tmp/partmap.image)"
+ 
+diff --git a/target/linux/x86/base-files/lib/upgrade/platform.sh b/target/linux/x86/base-files/lib/upgrade/platform.sh
+index 439ba8f5125d97932248ff966340165a84e1b24a..aa3b08d3acec66cb44b782230fdc857401fdf3c9 100644
+--- a/target/linux/x86/base-files/lib/upgrade/platform.sh
++++ b/target/linux/x86/base-files/lib/upgrade/platform.sh
+@@ -22,6 +22,14 @@ platform_check_image() {
+ 
+ 	get_partitions /tmp/image.bs image
+ 
++	imagesize="$(cat /tmp/partmap.image  | tail -n 1 | ( read i start size ; echo $((start + size)) ) )"
++	devicesize="$(cat /sys/block/$diskdev/size)"
++
++	if [ $imagesize -gt $devicesize ]; then
++		echo "Image size $imagesize bigger than device size $devicesize. Aborting."
++		exit 1
++	fi
++
+ 	#compare tables
+ 	diff="$(grep -F -x -v -f /tmp/partmap.bootdisk /tmp/partmap.image)"
+ 
