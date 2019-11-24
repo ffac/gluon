@@ -53,6 +53,26 @@ index 439ba8f5125d97932248ff966340165a84e1b24a..aa3b08d3acec66cb44b782230fdc8574
 +
 +	if [ $imagesize -gt $devicesize ]; then
 +		echo "Image size $imagesize bigger than device size $devicesize. Aborting."
++  echo "Change update path to x86-small specific path:"
++  uci del autoupdater.experimental.mirror
++  uci add_list autoupdater.experimental.mirror='http://updates.freifunk-aachen.de/from-2018.2.x-small/experimental/sysupgrade'
++  uci add_list autoupdater.experimental.mirror='http://updates.ffac.rocks/from-2018.2.x-small/experimental/sysupgrade'
++  uci add_list autoupdater.experimental.mirror='http://updates.aachen.freifunk.net/from-2018.2.x-small/experimental/sysupgrade'
++  uci del autoupdater.beta.mirror
++  uci add_list autoupdater.beta.mirror='http://updates.freifunk-aachen.de/from-2018.2.x-small/beta/sysupgrade'
++  uci add_list autoupdater.beta.mirror='http://updates.ffac.rocks/from-2018.2.x-small/beta/sysupgrade'
++  uci add_list autoupdater.beta.mirror='http://updates.aachen.freifunk.net/from-2018.2.x-small/beta/sysupgrade'
++  uci del autoupdater.stable.mirror
++  uci add_list autoupdater.stable.mirror='http://updates.freifunk-aachen.de/from-2018.2.x-small/stable/sysupgrade'
++  uci add_list autoupdater.stable.mirror='http://from-2018.2.x-small/updates.ffac.rocks/stable/sysupgrade'
++  uci add_list autoupdater.stable.mirror='http://updates.aachen.freifunk.net/from-2018.2.x-small/stable/sysupgrade'
++  uci commit autoupdater
++  uci show autoupdater
++  echo "Add small marker to release:"
++  sed -i 's/$/-small/' /lib/gluon/release
++  cat /lib/gluon/release
++  echo "Reboot node to restore normal operation."
++  reboot
 +		exit 1
 +	fi
 +
