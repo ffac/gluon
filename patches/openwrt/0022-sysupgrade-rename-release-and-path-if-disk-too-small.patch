@@ -6,7 +6,7 @@ diff --git a/target/linux/x86/base-files/lib/upgrade/platform.sh b/target/linux/
 index 439ba8f5125d97932248ff966340165a84e1b24a..87be9723acec66cb44b782230fdc857401fdf3c9 100644
 --- a/target/linux/x86/base-files/lib/upgrade/platform.sh
 +++ b/target/linux/x86/base-files/lib/upgrade/platform.sh
-@@ -22,6 +22,34 @@ platform_check_image() {
+@@ -22,6 +22,36 @@ platform_check_image() {
  
  	get_partitions /tmp/image.bs image
  
@@ -34,6 +34,8 @@ index 439ba8f5125d97932248ff966340165a84e1b24a..87be9723acec66cb44b782230fdc8574
 +		sed -i 's/$/-small/' /lib/gluon/release
 +		cat /lib/gluon/release
 +		echo "Reboot node to restore normal operation."
++		sync
++		sleep 1
 +		reboot
 +		exit 1
 +	fi
