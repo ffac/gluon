@@ -26,7 +26,7 @@ index 439ba8f5125d97932248ff966340165a84e1b24a..87be9723acec66cb44b782230fdc8574
 +		uci add_list autoupdater.beta.mirror='http://updates.aachen.freifunk.net/from-2018.2.x-small/beta/sysupgrade'
 +		uci del autoupdater.stable.mirror
 +		uci add_list autoupdater.stable.mirror='http://updates.freifunk-aachen.de/from-2018.2.x-small/stable/sysupgrade'
-+		uci add_list autoupdater.stable.mirror='http://from-2018.2.x-small/updates.ffac.rocks/stable/sysupgrade'
++		uci add_list autoupdater.stable.mirror='http://updates.ffac.rocks/from-2018.2.x-small/stable/sysupgrade'
 +		uci add_list autoupdater.stable.mirror='http://updates.aachen.freifunk.net/from-2018.2.x-small/stable/sysupgrade'
 +		uci commit autoupdater
 +		uci show autoupdater
