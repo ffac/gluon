@@ -3,41 +3,41 @@ Date: Mon, 25 Nov 2019 00:31:02 +0100
 Subject: sysupgrade: rename release an path if image too big
 
 diff --git a/target/linux/x86/base-files/lib/upgrade/platform.sh b/target/linux/x86/base-files/lib/upgrade/platform.sh
-index 439ba8f..87be972 100644
+index 439ba8f5125d97932248ff966340165a84e1b24a..87be9723acec66cb44b782230fdc857401fdf3c9 100644
 --- a/target/linux/x86/base-files/lib/upgrade/platform.sh
 +++ b/target/linux/x86/base-files/lib/upgrade/platform.sh
 @@ -22,6 +22,34 @@ platform_check_image() {
  
-        get_partitions /tmp/image.bs image
+ 	get_partitions /tmp/image.bs image
  
-+       imagesize="$(cat /tmp/partmap.image  | tail -n 1 | ( read i start size ; echo $((start + size)) ) )"
-+       devicesize="$(cat /sys/block/$diskdev/size)"
++	imagesize="$(cat /tmp/partmap.image  | tail -n 1 | ( read i start size ; echo $((start + size)) ) )"
++	devicesize="$(cat /sys/block/$diskdev/size)"
 +
-+       if [ $imagesize -gt $devicesize ]; then
-+               echo "Image size $imagesize bigger than device size $devicesize. Aborting."
-+               echo "Change update path to x86-small specific path:"
-+               uci del autoupdater.experimental.mirror
-+               uci add_list autoupdater.experimental.mirror='http://updates.freifunk-aachen.de/from-2018.2.x-small/experimental/sysupgrade'
-+               uci add_list autoupdater.experimental.mirror='http://updates.ffac.rocks/from-2018.2.x-small/experimental/sysupgrade'
-+               uci add_list autoupdater.experimental.mirror='http://updates.aachen.freifunk.net/from-2018.2.x-small/experimental/sysupgrade'
-+               uci del autoupdater.beta.mirror
-+               uci add_list autoupdater.beta.mirror='http://updates.freifunk-aachen.de/from-2018.2.x-small/beta/sysupgrade'
-+               uci add_list autoupdater.beta.mirror='http://updates.ffac.rocks/from-2018.2.x-small/beta/sysupgrade'
-+               uci add_list autoupdater.beta.mirror='http://updates.aachen.freifunk.net/from-2018.2.x-small/beta/sysupgrade'
-+               uci del autoupdater.stable.mirror
-+               uci add_list autoupdater.stable.mirror='http://updates.freifunk-aachen.de/from-2018.2.x-small/stable/sysupgrade'
-+               uci add_list autoupdater.stable.mirror='http://from-2018.2.x-small/updates.ffac.rocks/stable/sysupgrade'
-+               uci add_list autoupdater.stable.mirror='http://updates.aachen.freifunk.net/from-2018.2.x-small/stable/sysupgrade'
-+               uci commit autoupdater
-+               uci show autoupdater
-+               echo "Add small marker to release:"
-+               sed -i 's/$/-small/' /lib/gluon/release
-+               cat /lib/gluon/release
-+               echo "Reboot node to restore normal operation."
-+               reboot
-+               exit 1
-+       fi
++	if [ $imagesize -gt $devicesize ]; then
++		echo "Image size $imagesize bigger than device size $devicesize. Aborting."
++		echo "Change update path to x86-small specific path:"
++		uci del autoupdater.experimental.mirror
++		uci add_list autoupdater.experimental.mirror='http://updates.freifunk-aachen.de/from-2018.2.x-small/experimental/sysupgrade'
++		uci add_list autoupdater.experimental.mirror='http://updates.ffac.rocks/from-2018.2.x-small/experimental/sysupgrade'
++		uci add_list autoupdater.experimental.mirror='http://updates.aachen.freifunk.net/from-2018.2.x-small/experimental/sysupgrade'
++		uci del autoupdater.beta.mirror
++		uci add_list autoupdater.beta.mirror='http://updates.freifunk-aachen.de/from-2018.2.x-small/beta/sysupgrade'
++		uci add_list autoupdater.beta.mirror='http://updates.ffac.rocks/from-2018.2.x-small/beta/sysupgrade'
++		uci add_list autoupdater.beta.mirror='http://updates.aachen.freifunk.net/from-2018.2.x-small/beta/sysupgrade'
++		uci del autoupdater.stable.mirror
++		uci add_list autoupdater.stable.mirror='http://updates.freifunk-aachen.de/from-2018.2.x-small/stable/sysupgrade'
++		uci add_list autoupdater.stable.mirror='http://from-2018.2.x-small/updates.ffac.rocks/stable/sysupgrade'
++		uci add_list autoupdater.stable.mirror='http://updates.aachen.freifunk.net/from-2018.2.x-small/stable/sysupgrade'
++		uci commit autoupdater
++		uci show autoupdater
++		echo "Add small marker to release:"
++		sed -i 's/$/-small/' /lib/gluon/release
++		cat /lib/gluon/release
++		echo "Reboot node to restore normal operation."
++		reboot
++		exit 1
++	fi
 +
-        #compare tables
-        diff="$(grep -F -x -v -f /tmp/partmap.bootdisk /tmp/partmap.image)"
-
+ 	#compare tables
+ 	diff="$(grep -F -x -v -f /tmp/partmap.bootdisk /tmp/partmap.image)"
+ 
