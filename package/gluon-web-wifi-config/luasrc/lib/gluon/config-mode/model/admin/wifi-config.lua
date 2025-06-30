@@ -95,7 +95,7 @@ uci:foreach('wireless', 'wifi-device', function(config)
 
 	vif_option('client', {'client', 'owe'}, translate('Enable client network (access point)'))
 
-    -- only show mesh iface setting on radios which support the configured mesh channel
+	-- only show mesh iface setting on radios which support the configured mesh channel
 	if wireless.supports_channel(config, tonumber(config.channel)) then
 		local mesh_vif = vif_option('mesh', {'mesh'}, translate("Enable mesh network (802.11s)"))
 
