@@ -161,6 +161,9 @@
 					<%- end %>
 					<dt><%:Model%></dt><dd><%| nodeinfo.hardware.model %></dd>
 					<dt><%:Primary MAC address%></dt><dd><%| nodeinfo.network.mac %></dd>
+					<% if nodeinfo.software['batman-adv'] and nodeinfo.network.mesh.bat0.interfaces then -%>
+						<dt><%:Mesh MAC-Adresse%></dt><dd><%| nodeinfo.network.mesh.bat0.interfaces.other[1] %></dd>
+					<%- end %>
 					<dt><%:IP address%></dt><dd><%= pcdata(table.concat(sorted(nodeinfo.network.addresses), '\n')):gsub('\n', '<br>') %></dd>
 					<dt><%:Firmware%></dt><dd><%| nodeinfo.software.firmware.release %></dd>
 					<dt><%:Gluon Version%></dt><dd><%| nodeinfo.software.firmware.base %></dd>
@@ -171,6 +174,8 @@
 							<% if nodeinfo.network.mesh_vpn.provider then -%>
 							<br><%| nodeinfo.network.mesh_vpn.provider %>
 							<%- end %>
+							<% if nodeinfo.network.mesh.bat0.interfaces.tunnel and nodeinfo.network.mesh.bat0.interfaces.tunnel[1] then -%>
+							<br>mac: <%| nodeinfo.network.mesh.bat0.interfaces.tunnel[1] %>
 							<% if vpn_pubkey then -%>
 							<br><%| vpn_pubkey %> (public key)
 							<%- end %>
