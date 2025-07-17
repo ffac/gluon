@@ -51,11 +51,9 @@ function M.get_wlan_mac(func, index, radio)
 	if offset == nil then
 		return nil
 	end
-	if radio then
-		local addr = get_wlan_mac_from_driver(radio, offset)
-		if addr then
-			return addr
-		end
+	local addr = get_wlan_mac_from_driver(radio, offset)
+	if addr then
+		return addr
 	end
 
 	return util.generate_mac(4*index + offset)
@@ -81,6 +79,16 @@ function M.foreach_radio(uci, f)
 			f(radio, index-1, site.wifi5)
 		end
 	end
+end
+
+function M.get_wlan_mac_by_radio(uci, func, radio_index)
+	local radio_table = nil
+	M.foreach_radio(uci, function(radio, index)
+		if index == radio_index then
+			radio_table = radio
+		end
+	end)
+	return M.get_wlan_mac(func, radio_index, radio_table)
 end
 
 function M.preserve_channels(uci)
