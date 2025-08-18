@@ -67,8 +67,10 @@ mfp.default = uci:get('gluon', 'wireless', 'private_mfp') or "0"
 function f:write()
 	local roles_2g = uci:get_list('gluon', 'band_2g', 'role')
 	local roles_5g = uci:get_list('gluon', 'band_5g', 'role')
+	local roles_6g = uci:get_list('gluon', 'band_6g', 'role')
 	if enabled.data then
 		-- set new private wifi configuration
+		-- TODO should this be set everytime? To reset this with empty values?
 		uci:set('gluon', 'wireless', 'private_ssid', ssid.data)
 		uci:set('gluon', 'wireless', 'private_key', key.data)
 		uci:set('gluon', 'wireless', 'private_encryption', encryption.data)
@@ -76,12 +78,15 @@ function f:write()
 
 		util.add_to_set(roles_2g, 'private')
 		util.add_to_set(roles_5g, 'private')
+		util.add_to_set(roles_6g, 'private')
 	else
 		util.remove_from_set(roles_2g, 'private')
 		util.remove_from_set(roles_5g, 'private')
+		util.remove_from_set(roles_6g, 'private')
 	end
 	uci:set_list('gluon', 'band_2g', 'role', roles_2g)
 	uci:set_list('gluon', 'band_5g', 'role', roles_5g)
+	uci:set_list('gluon', 'band_6g', 'role', roles_6g)
 
 	uci:commit('gluon')
 	os.execute('/usr/bin/gluon-reconfigure')
