@@ -4,7 +4,7 @@ local wireless = require 'gluon.wireless'
 local uci = require('simple-uci').cursor()
 local util = require "gluon.util"
 
-local client_only_radio = {band_2g=0, band_5g=0}
+local client_only_radio = {band_2g=0, band_5g=0, band_6g=0}
 
 local function count_band(band)
 	client_only_radio[band] = client_only_radio[band] + 1
@@ -110,11 +110,17 @@ end
 
 wireless.foreach_radio(uci, function(radio, index, config)
 	local radio_name = radio['.name']
-	if not is_disabled(radio, config) then
-		configure_ap(radio, index, config, radio_name)
+
+	if not is_disabled(radio, config)  then
+		-- 6ghz does not support unencrypted client ifaces
+		if radio.band ~= '6g' then
+			configure_ap(radio, index, config, radio_name)
+		end
 
 		configure_owe(radio, index, config, radio_name)
-		configure_owe_transition_mode(config, radio_name)
+		if radio.band ~= '6g' then
+			configure_owe_transition_mode(config, radio_name)
+		end
 	end
 end)
 

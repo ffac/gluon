@@ -89,6 +89,8 @@ function M.foreach_radio(uci, f)
 			f(radio, index-1, site.wifi24)
 		elseif band == '5g' then
 			f(radio, index-1, site.wifi5)
+		elseif band == '6g' then
+			f(radio, index-1, site.wifi6)
 		end
 	end
 end
@@ -153,6 +155,8 @@ function M.device_supports_band(uci, band)
 		if band == '2g' and hwmodes.g then
 			ret = true
 		elseif band == '5g' and (hwmodes.a or hwmodes.ac) then
+			ret = true
+		elseif band == '6g' and (hwmodes.ax and not hwmodes.ac and not hwmodes.g) then
 			ret = true
 		end
 	end)
