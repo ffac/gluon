@@ -11,7 +11,7 @@ if not uci:get_bool('gluon', 'wireless', 'preserve_channels') then
 	uci:delete_all('wireless', 'wifi-iface')
 end
 
-local radio_band_count = {band2g=0, band5g=0}
+local radio_band_count = {band2g=0, band5g=0, band6g=0}
 
 local function count_band(band)
 	radio_band_count[band] = radio_band_count[band] + 1
@@ -29,6 +29,10 @@ wireless.foreach_radio(uci, function(radio)
 	elseif (hwmodes.a or hwmodes.ac) and not hwmodes.g then
 		-- 5 GHz
 		count_band("band5g")
+	elseif hwmodes.ax and not hwmodes.ac then
+		-- TODO validate
+		-- 6 GHz
+		count_band("band6g")
 	end
 end)
 
@@ -58,6 +62,10 @@ end
 local function get_channel(radio, config)
 	if radio.band == '5g' and is_outdoor() then
 		-- actual channel will be picked and probed from chanlist
+		return 'auto'
+	end
+
+	if radio.band == '6g' then
 		return 'auto'
 	end
 

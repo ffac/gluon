@@ -77,6 +77,8 @@ uci:foreach('wireless', 'wifi-device', function(config)
 	else
 		if band == '2g' then
 			title = translate("2.4GHz WLAN")
+		elseif band == '6g' then
+			title = translate("6GHz WLAN")
 		elseif band == '5g' then
 			is_5ghz = true
 			title = translate("5GHz WLAN")

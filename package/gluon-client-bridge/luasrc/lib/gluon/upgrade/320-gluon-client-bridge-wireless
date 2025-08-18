@@ -5,7 +5,7 @@ local util = require 'gluon.util'
 
 local uci = require('simple-uci').cursor()
 
-local client_only_radio = {band2g=0, band5g=0}
+local client_only_radio = {band2g=0, band5g=0, band6g=0}
 
 local function count_band(band)
 	client_only_radio[band] = client_only_radio[band] + 1
