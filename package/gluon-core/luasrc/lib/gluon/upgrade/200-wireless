@@ -9,7 +9,7 @@ local uci = require('simple-uci').cursor()
 
 uci:delete_all('wireless', 'wifi-iface')
 
-local radio_band_count = {band2g=0, band5g=0}
+local radio_band_count = {band2g=0, band5g=0, band6g=0}
 
 local function count_band(band)
 	radio_band_count[band] = radio_band_count[band] + 1
@@ -27,6 +27,10 @@ wireless.foreach_radio(uci, function(radio)
 	elseif (hwmodes.a or hwmodes.ac) and not hwmodes.g then
 		-- 5 GHz
 		count_band("band5g")
+	elseif hwmodes.ax and not hwmodes.ac then
+		-- TODO validate
+		-- 6 GHz
+		count_band("band6g")
 	end
 end)
 
@@ -203,7 +207,7 @@ wireless.foreach_radio(uci, function(radio, index, config)
 	end
 
 	if roles and util.contains(roles, 'mesh') then
-		if band == '2g' then
+		if band == '2g' or band == '6g' then
 			configure_mesh_wireless(radio, index, config, false)
 		elseif (band == '5g') then
 			if is_outdoor() or not wireless.supports_channel(radio, config.channel()) then

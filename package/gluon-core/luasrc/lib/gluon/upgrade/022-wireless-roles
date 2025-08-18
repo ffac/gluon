@@ -9,6 +9,7 @@ local wireless = require 'gluon.wireless'
 local default_wifi_roles = {
 	band2g = {'client'},
 	band5g = {'client'},
+	band6g = {'client'},
 }
 
 -- enable mesh if it is not disabled
@@ -17,6 +18,9 @@ if not site.wifi24.mesh.disabled(false) then
 end
 if not site.wifi5.mesh.disabled(false) then
 	util.add_to_set(default_wifi_roles['band5g'], 'mesh')
+end
+if not site.wifi6.mesh.disabled(false) then
+	util.add_to_set(default_wifi_roles['band6g'], 'mesh')
 end
 
 local role_iface_names = {
