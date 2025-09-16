@@ -1,0 +1,16 @@
+commit 8ee4b1aeee31c9d0c39555fde4e30ff68b1f9ba9
+Author: Florian Maurer <f.maurer@outlook.de>
+Date:   Tue Sep 16 14:26:28 2025 +0200
+
+    feeds: update to custom feed to check if broker_selection works as intended
+
+diff --git a/feeds.conf.default b/feeds.conf.default
+index 581de056c4..9be2089fc9 100644
+--- a/feeds.conf.default
++++ b/feeds.conf.default
+@@ -1,4 +1,4 @@
+-src-git packages https://git.openwrt.org/feed/packages.git;openwrt-24.10
++src-git packages https://github.com/maurerle/packages;tunneldigger_broker_selection
+ src-git luci https://git.openwrt.org/project/luci.git;openwrt-24.10
+ src-git routing https://git.openwrt.org/feed/routing.git;openwrt-24.10
+ src-git telephony https://git.openwrt.org/feed/telephony.git;openwrt-24.10
