@@ -245,11 +245,7 @@ build-packages:
 	+@
 	for target in $(GLUON_TARGETS); do
 		echo "$$target"
-		export GLUON_TARGET="$$target"
-# 		$(GLUON_ENV) $(LUA) scripts/target_config.lua > openwrt/.config
-# 		$(OPENWRTMAKE) defconfig
-# 		$(GLUON_ENV) $(LUA) scripts/target_config_check.lua
-		scripts/build_pkgs.sh -u
+		scripts/build_pkgs.sh -u -t "$$target" community ffac
 	done
 
 
