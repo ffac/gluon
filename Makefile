@@ -241,6 +241,18 @@ manifest: $(LUA) FORCE
 	mkdir -p '$(GLUON_IMAGEDIR)/sysupgrade'
 	mv 'tmp/$(GLUON_AUTOUPDATER_BRANCH).manifest.tmp' '$(GLUON_IMAGEDIR)/sysupgrade/$(GLUON_AUTOUPDATER_BRANCH).manifest'
 
+build-packages:
+	+@
+	for target in $(GLUON_TARGETS); do
+		echo "$$target"
+		export GLUON_TARGET="$$target"
+# 		$(GLUON_ENV) $(LUA) scripts/target_config.lua > openwrt/.config
+# 		$(OPENWRTMAKE) defconfig
+# 		$(GLUON_ENV) $(LUA) scripts/target_config_check.lua
+		scripts/build_pkgs.sh -u
+	done
+
+
 FORCE: ;
 
 .PHONY: FORCE
