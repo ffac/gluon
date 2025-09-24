@@ -1,0 +1,25 @@
+From eb72d1715f2eb1eae40feb696fefbd7f090ef5e8 Mon Sep 17 00:00:00 2001
+From: Florian Maurer <f.maurer@outlook.de>
+Date: Thu, 25 Sep 2025 00:44:37 +0200
+Subject: [PATCH] mediatek: fix label-mac for vero w6m
+
+This makes sure that the label-mac is unique.
+Otherwise all models of this device show the 00:0c:43:26:60:00 mac address in gluon
+
+Signed-off-by: Florian Maurer <f.maurer@outlook.de>
+---
+ target/linux/mediatek/filogic/base-files/etc/board.d/02_network | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+index 95af3b04e39ecc..be843db4f91673 100644
+--- a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
++++ b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
+@@ -184,6 +184,7 @@ mediatek_setup_macs()
+ 	acer,vero-w6m)
+ 		wan_mac=$(mmc_get_mac_ascii u-boot-env WANMAC)
+ 		lan_mac=$(mmc_get_mac_ascii u-boot-env LANMAC)
++		label_mac=$(mmc_get_mac_ascii u-boot-env WANMAC)
+ 		;;
+ 	acer,predator-w6x)
+ 		wan_mac=$(mtd_get_mac_ascii u-boot-env ethaddr)
