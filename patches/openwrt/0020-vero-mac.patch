@@ -1,4 +1,4 @@
-From eb72d1715f2eb1eae40feb696fefbd7f090ef5e8 Mon Sep 17 00:00:00 2001
+From 161ba7f6493eb1a0f0ef4bb3f8a1758f6a5ac601 Mon Sep 17 00:00:00 2001
 From: Florian Maurer <f.maurer@outlook.de>
 Date: Thu, 25 Sep 2025 00:44:37 +0200
 Subject: [PATCH] mediatek: fix label-mac for vero w6m
@@ -12,14 +12,14 @@ Signed-off-by: Florian Maurer <f.maurer@outlook.de>
  1 file changed, 1 insertion(+)
 
 diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
-index 95af3b04e39ecc..be843db4f91673 100644
+index 59a7a720f3af66..1c8c86d916af99 100644
 --- a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
 +++ b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
-@@ -184,6 +184,7 @@ mediatek_setup_macs()
+@@ -164,6 +164,7 @@ mediatek_setup_macs()
  	acer,vero-w6m)
  		wan_mac=$(mmc_get_mac_ascii u-boot-env WANMAC)
  		lan_mac=$(mmc_get_mac_ascii u-boot-env LANMAC)
 +		label_mac=$(mmc_get_mac_ascii u-boot-env WANMAC)
  		;;
- 	acer,predator-w6x)
- 		wan_mac=$(mtd_get_mac_ascii u-boot-env ethaddr)
+ 	bananapi,bpi-r3|\
+ 	bananapi,bpi-r3-mini|\
