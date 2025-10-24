@@ -26,6 +26,15 @@ device('tp-link-archer-c2600', 'tplink_c2600', {
 	broken = true,
 })
 
+-- Aruba
+
+device('aruba-ap-325', 'aruba_ap-325', {
+	factory = '-squashfs-nand-factory',
+	sysupgrade = '-squashfs-nand-sysupgrade',
+	packages = QCA9980_PACKAGES,
+})
+
+
 --
 -- QCA9984
 --
