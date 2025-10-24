@@ -1,0 +1,33 @@
+From: Florian Maurer <f.maurer@outlook.de>
+Date: Fri, 24 Oct 2025 12:17:54 +0200
+Subject: ipq806x: aruba_ap-325: use ath10k-ct and correct label mac
+
+Signed-off-by: Florian Maurer <f.maurer@outlook.de>
+
+diff --git a/target/linux/ipq806x/base-files/etc/board.d/02_network b/target/linux/ipq806x/base-files/etc/board.d/02_network
+index 23dc6e750442a3240b259b2f2da34d50bc20cb84..ab9ecbd0400ad658c08122bb2e29d0c602bee9dd 100644
+--- a/target/linux/ipq806x/base-files/etc/board.d/02_network
++++ b/target/linux/ipq806x/base-files/etc/board.d/02_network
+@@ -107,6 +107,7 @@ ipq806x_setup_macs()
+ 			hw_mac_addr=$(mtd_get_mac_ascii 0:appsblenv ethaddr)
+ 			ucidef_set_interface_macaddr "lan" "$hw_mac_addr"
+ 			ucidef_set_interface_macaddr "wan" "$(macaddr_add $hw_mac_addr 1)"
++			ucidef_set_label_macaddr "$hw_mac_addr"
+ 	esac
+ }
+ 
+diff --git a/target/linux/ipq806x/image/generic.mk b/target/linux/ipq806x/image/generic.mk
+index eb19cb1b60461a16b9004afbd7734eb67e32815a..5a2ed982e8e69a015ac5a82dd60ff3ff54dc4e14 100644
+--- a/target/linux/ipq806x/image/generic.mk
++++ b/target/linux/ipq806x/image/generic.mk
+@@ -124,8 +124,8 @@ define Device/aruba_ap-325
+ 	KERNEL_SUFFIX := .ari
+ 	KERNEL = kernel-bin | append-dtb | uImage none | apboot-addfwhdr Octomore
+ 	KERNEL_LOADADDR = 0x41508000
+-	# Use non-ct firmware for now
+-	DEVICE_PACKAGES := -kmod-ath10k-ct kmod-ath10k ath10k-firmware-qca99x0
++	# Use ct firmware to allow mesh
++	DEVICE_PACKAGES := ath10k-firmware-qca99x0-ct
+ endef
+ TARGET_DEVICES += aruba_ap-325
+ 
