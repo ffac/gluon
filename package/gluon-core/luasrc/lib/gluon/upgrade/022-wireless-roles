@@ -21,6 +21,10 @@ if site.wifi5.ap() and not site.wifi5.ap.disabled(false) then
 	util.add_to_set(default_wifi_roles['5g'], 'client')
 end
 
+if site.wifi6.ap() and not site.wifi6.ap.disabled(false) then
+	util.add_to_set(default_wifi_roles['6g'], 'client')
+end
+
 -- enable mesh if it is not disabled
 if site.wifi24.mesh() and not site.wifi24.mesh.disabled(false) then
 	util.add_to_set(default_wifi_roles['2g'], 'mesh')

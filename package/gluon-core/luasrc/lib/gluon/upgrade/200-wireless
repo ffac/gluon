@@ -178,7 +178,7 @@ wireless.foreach_radio(uci, function(radio, index, config)
 			configure_mesh(radio, index, config.mesh())
 		end
 	elseif band == '6g' then
-		if util.contains(roles, 'mesh') then
+		if enable_mesh then
 			configure_mesh(radio, index, config.mesh())
 		end
 	elseif band == '5g' then
