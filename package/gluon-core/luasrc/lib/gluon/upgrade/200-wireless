@@ -71,22 +71,37 @@ local function get_htmode(radio)
 		return radio.htmode
 	end
 
-
 	local htmode = uci:get('gluon', radio['.name'], 'htmode')
 	if htmode ~= nil then
 		return htmode
 	end
 
+	local channel_width = 20
+
+	if radio.band == '2g' then
+		channel_width = site.wifi24.channel_width(20)
+	elseif radio.band == '5g' then
+		channel_width = site.wifi5.channel_width(20)
+	end
+
 	local phy = wireless.find_phy(radio)
 	if iwinfo.nl80211.hwmodelist(phy).ax then
-		return 'HE20'
+		htmode = 'HE' .. channel_width
+	elseif iwinfo.nl80211.hwmodelist(phy).ac then
+		htmode = 'VHT' .. channel_width
+	else
+		htmode = 'HT' .. channel_width
 	end
 
-	if iwinfo.nl80211.hwmodelist(phy).ac then
-		return 'VHT20'
+	for mode, available in pairs(iwinfo.nl80211.htmodelist(phy)) do
+		if available and mode == htmode then
+			return htmode
+		end
 	end
 
-	return 'HT20'
+	-- if preferred htmode is not available
+	-- select the last one we got
+	return htmode
 end
 
 local function configure_mesh(radio, index, mesh_config)
