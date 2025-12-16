@@ -1,0 +1,22 @@
+From 14f318c0a4f7b94ecb3b92024bb8fa44ebabf7e7 Mon Sep 17 00:00:00 2001
+From: Florian Maurer <f.maurer@outlook.de>
+Date: Tue, 16 Dec 2025 16:12:08 +0100
+Subject: [PATCH] ath79: set label-mac to eth0 for EW71-V2
+
+Signed-off-by: Florian Maurer <f.maurer@outlook.de>
+---
+ target/linux/ath79/dts/qca9531_comfast_cf-ew71-v2.dts | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/target/linux/ath79/dts/qca9531_comfast_cf-ew71-v2.dts b/target/linux/ath79/dts/qca9531_comfast_cf-ew71-v2.dts
+index 934cb19a58b0dd..98ad7f871d9d0c 100644
+--- a/target/linux/ath79/dts/qca9531_comfast_cf-ew71-v2.dts
++++ b/target/linux/ath79/dts/qca9531_comfast_cf-ew71-v2.dts
+@@ -15,6 +15,7 @@
+ 		led-boot = &led_wan;
+ 		led-failsafe = &led_wan;
+ 		led-upgrade = &led_wan;
++		label-mac-device = &eth0;
+ 	};
+ 
+ 	leds {
