@@ -283,7 +283,7 @@
 						local address = util.readfile('/sys/class/net/' .. iface .. '/address')
 						if address then
 				%>
-					<h3><%| iface %></h3>
+					<h3><%| iface %> <sub>MAC: <%| util.trim(address) %></sub></h3>
 					<div data-interface="<%| iface %>" data-interface-address="<%| util.trim(address) %>"<%= attr('data-interface-wireless', wireless) %>>
 						<table class="datatable">
 							<tbody>
