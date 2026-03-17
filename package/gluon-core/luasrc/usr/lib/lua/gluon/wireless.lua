@@ -39,10 +39,20 @@ local function get_wlan_mac_from_driver(radio, vif)
 	return addresses[vif+1]
 end
 
+-- The radios of a multi-radio phy share its channel list, in which the
+-- channel numbers of the different bands overlap
+local band_frequencies = {
+	['2g'] = {2400, 2500},
+	['5g'] = {5000, 5925},
+	['6g'] = {5925, 7125},
+}
+
 function M.supports_channel(radio, channel)
 	local phy = M.find_phy(radio)
+	local range = radio.radio and band_frequencies[radio.band]
 	for _, chan in ipairs(iwinfo.nl80211.freqlist(phy)) do
-		if channel == chan.channel then
+		if channel == chan.channel and
+				(not range or (chan.mhz > range[1] and chan.mhz < range[2])) then
 			return true
 		end
 	end
