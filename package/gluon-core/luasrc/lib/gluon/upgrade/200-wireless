@@ -20,6 +20,13 @@ end
 -- capable of operating in the 2.4 GHz and 5 GHz band need
 -- to be distributed evenly.
 wireless.foreach_radio(uci, function(radio)
+	-- The radios of a multi-radio phy have a fixed band, but
+	-- report the capabilities of the whole phy
+	if radio.radio then
+		count_band("band_" .. radio.band)
+		return
+	end
+
 	local hwmodes = iwinfo.nl80211.hwmodelist(wireless.find_phy(radio))
 	if hwmodes.g and not (hwmodes.a or hwmodes.ac) then
 		-- 2.4 GHz
@@ -36,6 +43,10 @@ end)
 -- Use the number of all fixed 2.4G GHz and 5 GHz radios to
 -- distribute dualband radios in this step.
 wireless.foreach_radio(uci, function(radio)
+	if radio.radio then
+		return
+	end
+
 	local radio_name = radio['.name']
 	local hwmodes = iwinfo.nl80211.hwmodelist(wireless.find_phy(radio))
 	if (hwmodes.a or hwmodes.ac) and hwmodes.g then
@@ -79,38 +90,39 @@ local function get_htmode(radio)
 		channel_width = site.wifi24.channel_width(20)
 	elseif radio.band == '5g' then
 		channel_width = site.wifi5.channel_width(20)
+	elseif radio.band == '6g' then
+		channel_width = site.wifi6.channel_width(20)
 	end
 
-	local phy = wireless.find_phy(radio)
-	local htmode
-	if iwinfo.nl80211.hwmodelist(phy).ax then
-		htmode = 'HE'
-	elseif iwinfo.nl80211.hwmodelist(phy).ac then
-		htmode = 'VHT'
-	else
-		htmode = 'HT'
-	end
+	-- The htmodes of a multi-radio phy include the widths of all its bands
+	local max_width = ({['2g'] = 40, ['5g'] = 160})[radio.band] or 320
+	local htmodelist = iwinfo.nl80211.htmodelist(wireless.find_phy(radio))
 
-	local last_width
+	-- Use the best hwmode for which any htmode is advertised
+	for _, htmode in ipairs({'EHT', 'HE', 'VHT', 'HT'}) do
+		local last_width
 
-	for mode, available in pairs(iwinfo.nl80211.htmodelist(phy)) do
-		if available then
-			local hwmode = mode:match("%a+")
-			local width = tonumber(mode:match("%d+"))
+		for mode, available in pairs(htmodelist) do
+			if available then
+				local hwmode = mode:match("%a+")
+				local width = tonumber(mode:match("%d+"))
 
-			if hwmode .. width == mode and hwmode == htmode then
-				if width == channel_width then
-					return hwmode .. width
-				end
+				if hwmode .. width == mode and hwmode == htmode and width <= max_width then
+					if width == channel_width then
+						return hwmode .. width
+					end
 
-				if not last_width or width > last_width then
-					last_width = width
+					if not last_width or width > last_width then
+						last_width = width
+					end
 				end
 			end
 		end
-	end
 
-	return htmode .. last_width
+		if last_width then
+			return htmode .. last_width
+		end
+	end
 end
 
 local function configure_mesh(radio, index, mesh_config)
