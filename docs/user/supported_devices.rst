@@ -1,6 +1,13 @@
 Supported Devices & Architectures
 =================================
 
+airoha-an7581
+-------------
+
+* Gemtek
+
+  - W1700K (UBI)
+
 armsr-armv7
 -----------
 
