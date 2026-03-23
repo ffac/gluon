@@ -33,10 +33,9 @@ index 0000000000000000000000000000000000000000..d4498603785a21a71951a6195cd96661
 +
 +--- a/Makefile
 ++++ b/Makefile
-+@@ -69,6 +69,7 @@ $(eval $(call add_command,multicast_mode
++@@ -69,5 +69,6 @@ $(eval $(call add_command,multicast_mode
 + $(eval $(call add_command,neighbors,y))
 + $(eval $(call add_command,neighbors_json,y))
-+ $(eval $(call add_command,network_coding,y))
 ++$(eval $(call add_command,noflood_mark,y))
 + $(eval $(call add_command,orig_interval,y))
 + $(eval $(call add_command,originators,y))
