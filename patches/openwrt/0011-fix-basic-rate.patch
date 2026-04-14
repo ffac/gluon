@@ -1,0 +1,58 @@
+From f84aba452dd020bd89ff6b66744841e8fa94b2c9 Mon Sep 17 00:00:00 2001
+From: Florian Maurer <f.maurer@outlook.de>
+Date: Wed, 15 Apr 2026 01:05:45 +0200
+Subject: [PATCH] wifi-scripts: fix basic_rate mapping in supplicant ucode
+
+The ucode migration wrote "basic_rate" into the wpa_supplicant network
+block, but that is not a valid wpa_supplicant network field, causing:
+
+  Line 15: unknown network field 'basic_rate'.
+  failed to parse network block.
+
+Map UCI basic_rate to the correct wpa_supplicant fields, matching the
+behavior of the legacy shell script (hostapd.sh):
+
+  - mesh mode:  mesh_basic_rates (space-separated, 100 kb/s units)
+  - sta/adhoc:  rates            (comma-separated Mbps)
+---
+ .../usr/share/ucode/wifi/supplicant.uc        | 20 +++++++++++++++++--
+ 1 file changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/package/network/config/wifi-scripts/files-ucode/usr/share/ucode/wifi/supplicant.uc b/package/network/config/wifi-scripts/files-ucode/usr/share/ucode/wifi/supplicant.uc
+index e6cdf8d578d384..4e5d0267fb0116 100644
+--- a/package/network/config/wifi-scripts/files-ucode/usr/share/ucode/wifi/supplicant.uc
++++ b/package/network/config/wifi-scripts/files-ucode/usr/share/ucode/wifi/supplicant.uc
+@@ -172,7 +172,23 @@ function setup_sta(data, config) {
+ 
+ 	config.key_mgmt ??= 'NONE';
+ 
+-	config.basic_rate = ratelist(config.basic_rate);
++	/*
++	 * Map UCI basic_rate to the correct wpa_supplicant network field:
++	 *   mesh  -> mesh_basic_rates  (space-separated, 100 kb/s units)
++	 *   other -> rates             (comma-separated Mbps, e.g. "5.5,11")
++	 * "basic_rate" itself is not a valid wpa_supplicant network field.
++	 */
++	let brates = config.basic_rate;
++	config.basic_rate = null;
++	config.mesh_basic_rates = null;
++	config.rates = null;
++	if (brates != null && length(brates) > 0) {
++		if (config.mode == 'mesh')
++			config.mesh_basic_rates = join(" ", map(brates, (br) => "" + int(br / 100)));
++		else
++			config.rates = ratelist(brates);
++	}
++
+ 	config.mcast_rate = ratestr(config.mcast_rate);
+ 
+ 	network_append_string_vars(config, [ 'ssid',
+@@ -185,7 +201,7 @@ function setup_sta(data, config) {
+ 		'ocv', 'beacon_prot', 'key_mgmt', 'sae_pwe', 'psk', 'sae_password', 'pairwise', 'group', 'bssid',
+ 		'proto', 'mesh_fwding', 'mesh_rssi_threshold', 'frequency', 'fixed_freq',
+ 		'disable_ht', 'disable_ht40', 'disable_vht', 'vht', 'max_oper_chwidth',
+-		'ht40', 'beacon_int', 'ieee80211w', 'basic_rate', 'mcast_rate',
++		'ht40', 'beacon_int', 'ieee80211w', 'rates', 'mesh_basic_rates', 'mcast_rate',
+ 		'altsubject_match', 'domain_match', 'domain_suffix_match',
+ 		'bssid_blacklist', 'bssid_whitelist', 'erp',
+ 	]);
