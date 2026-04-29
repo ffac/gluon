@@ -1,0 +1,26 @@
+From: Florian Maurer <fmaurer@disroot.org>
+Date: Sun, 19 Apr 2026 16:29:40 +0000
+Subject: ipq806x: uboot-envtools: match appsblenv label case-insensitively
+
+The Aruba AP-325 DTS labels its U-Boot env partition "0:appsblenv"
+(lowercase) via qcom,smem-part, so the grep in ubootenv_mtdinfo never
+matches and /etc/config/ubootenv stays empty.  Making the grep
+case-insensitive keeps the existing uppercase-APPSBLENV consumers
+(qcom,ipq8064-ap148, qcom,ipq8064-db149) working and lets the AP-325
+stanza auto-configure fw_printenv/fw_setenv.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+
+diff --git a/package/boot/uboot-envtools/files/ipq806x b/package/boot/uboot-envtools/files/ipq806x
+index 443a0e13d40deb95ba1e5ca44c1cce632baed574..c0d11b70d7d6c15348b87742b89e5c2a7d4061bb 100644
+--- a/package/boot/uboot-envtools/files/ipq806x
++++ b/package/boot/uboot-envtools/files/ipq806x
+@@ -12,7 +12,7 @@ touch /etc/config/ubootenv
+ board=$(board_name)
+ 
+ ubootenv_mtdinfo () {
+-	UBOOTENV_PART=$(cat /proc/mtd | grep APPSBLENV)
++	UBOOTENV_PART=$(cat /proc/mtd | grep -i APPSBLENV)
+ 	mtd_dev=$(echo $UBOOTENV_PART | awk '{print $1}' | sed 's/:$//')
+ 	mtd_size=$(echo $UBOOTENV_PART | awk '{print "0x"$2}')
+ 	mtd_erase=$(echo $UBOOTENV_PART | awk '{print "0x"$3}')

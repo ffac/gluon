@@ -1,0 +1,164 @@
+From: Lukas Stockner <lukas@lukasstockner.de>
+Date: Sat, 14 Mar 2026 03:32:49 +0100
+Subject: Support a separate UBI partition for rootfs_data
+
+diff --git a/package/base-files/files/lib/upgrade/nand.sh b/package/base-files/files/lib/upgrade/nand.sh
+index ca302557c8ea0f566307171cf9d3a1ac906257db..087e4e2b9fc09deb91f0213feeee422e8f0d4679 100644
+--- a/package/base-files/files/lib/upgrade/nand.sh
++++ b/package/base-files/files/lib/upgrade/nand.sh
+@@ -7,8 +7,9 @@
+ CI_KERNPART="${CI_KERNPART:-kernel}"
+ 
+ # 'ubi' partition on NAND contains UBI
+-# There are also CI_KERN_UBIPART and CI_ROOT_UBIPART if kernel
+-# and rootfs are on separated UBIs.
++# If individual UBI volumes are on different partitions,
++# they can be set with CI_KERN_UBIPART, CI_ROOT_UBIPART and/or
++# CI_DATA_UBIPART.
+ CI_UBIPART="${CI_UBIPART:-ubi}"
+ 
+ # 'rootfs' UBI volume on NAND contains the rootfs
+@@ -77,9 +78,10 @@ identify_if_gzip() {
+ }
+ 
+ nand_restore_config() {
+-	local ubidev=$( nand_find_ubi "${CI_ROOT_UBIPART:-$CI_UBIPART}" )
++	local ubidev=$( nand_find_ubi "${CI_DATA_UBIPART:-$CI_UBIPART}" )
+ 	local ubivol="$( nand_find_volume $ubidev rootfs_data )"
+ 	if [ ! "$ubivol" ]; then
++		local ubidev=$( nand_find_ubi "${CI_ROOT_UBIPART:-$CI_UBIPART}" )
+ 		ubivol="$( nand_find_volume $ubidev "$CI_ROOTPART" )"
+ 		if [ ! "$ubivol" ]; then
+ 			echo "cannot find ubifs data volume"
+@@ -191,20 +193,17 @@ nand_upgrade_prepare_ubi() {
+ 
+ 	[ -n "$rootfs_length" -o -n "$kernel_length" ] || return 1
+ 
+-	if [ -n "$CI_KERN_UBIPART" -a -n "$CI_ROOT_UBIPART" ]; then
+-		kern_ubidev="$( nand_attach_ubi "$CI_KERN_UBIPART" "$has_env" )"
+-		[ -n "$kern_ubidev" ] || return 1
+-		root_ubidev="$( nand_attach_ubi "$CI_ROOT_UBIPART" )"
+-		[ -n "$root_ubidev" ] || return 1
+-	else
+-		kern_ubidev="$( nand_attach_ubi "$CI_UBIPART" "$has_env" )"
+-		[ -n "$kern_ubidev" ] || return 1
+-		root_ubidev="$kern_ubidev"
+-	fi
++	# Attach UBI partitions (might be identical, but nand_attach_ubi handles that)
++	kern_ubidev="$( nand_attach_ubi "${CI_KERN_UBIPART:-$CI_UBIPART}" "$has_env" )"
++	[ -n "$kern_ubidev" ] || return 1
++	root_ubidev="$( nand_attach_ubi "${CI_ROOT_UBIPART:-$CI_UBIPART}" )"
++	[ -n "$root_ubidev" ] || return 1
++	data_ubidev="$( nand_attach_ubi "${CI_DATA_UBIPART:-$CI_UBIPART}" )"
++	[ -n "$data_ubidev" ] || return 1
+ 
+ 	local kern_ubivol="$( nand_find_volume $kern_ubidev "$CI_KERNPART" )"
+ 	local root_ubivol="$( nand_find_volume $root_ubidev "$CI_ROOTPART" )"
+-	local data_ubivol="$( nand_find_volume $root_ubidev rootfs_data )"
++	local data_ubivol="$( nand_find_volume $data_ubidev rootfs_data )"
+ 	[ "$root_ubivol" = "$kern_ubivol" ] && root_ubivol=
+ 
+ 	# remove ubiblocks
+@@ -215,7 +214,7 @@ nand_upgrade_prepare_ubi() {
+ 	# kill volumes
+ 	[ "$kern_ubivol" ] && ubirmvol /dev/$kern_ubidev -N "$CI_KERNPART" || :
+ 	[ "$root_ubivol" ] && ubirmvol /dev/$root_ubidev -N "$CI_ROOTPART" || :
+-	[ "$data_ubivol" ] && ubirmvol /dev/$root_ubidev -N rootfs_data || :
++	[ "$data_ubivol" ] && ubirmvol /dev/$data_ubidev -N rootfs_data || :
+ 
+ 	# create kernel vol
+ 	if [ -n "$kernel_length" ]; then
+@@ -245,8 +244,8 @@ nand_upgrade_prepare_ubi() {
+ 		if [ -n "$rootfs_data_max" ]; then
+ 			rootfs_data_size_param="-s $rootfs_data_max"
+ 		fi
+-		if ! ubimkvol /dev/$root_ubidev -N rootfs_data $rootfs_data_size_param; then
+-			if ! ubimkvol /dev/$root_ubidev -N rootfs_data -m; then
++		if ! ubimkvol /dev/$data_ubidev -N rootfs_data $rootfs_data_size_param; then
++			if ! ubimkvol /dev/$data_ubidev -N rootfs_data -m; then
+ 				echo "cannot initialize rootfs_data volume"
+ 				return 1
+ 			fi
+@@ -278,8 +277,8 @@ nand_upgrade_ubifs() {
+ 
+ 	nand_upgrade_prepare_ubi "$ubifs_length" "ubifs" "" "" || return 1
+ 
+-	local ubidev="$( nand_find_ubi "$CI_UBIPART" )"
+-	local root_ubivol="$(nand_find_volume $ubidev "$CI_ROOTPART")"
++	local root_ubidev="$( nand_find_ubi "${CI_ROOT_UBIPART:-$CI_UBIPART}" )"
++	local root_ubivol="$(nand_find_volume $root_ubidev "$CI_ROOTPART")"
+ 	$cmd < "$ubifs_file" | ubiupdatevol /dev/$root_ubivol -s "$ubifs_length" -
+ }
+ 
+@@ -292,7 +291,7 @@ nand_upgrade_fit() {
+ 
+ 	nand_upgrade_prepare_ubi "" "" "$fit_length" "1" || return 1
+ 
+-	local fit_ubidev="$(nand_find_ubi "$CI_UBIPART")"
++	local fit_ubidev="$(nand_find_ubi "${CI_KERN_UBIPART:-$CI_UBIPART}")"
+ 	local fit_ubivol="$(nand_find_volume $fit_ubidev "$CI_KERNPART")"
+ 	$cmd < "$fit_file" | ubiupdatevol /dev/$fit_ubivol -s "$fit_length" -
+ }
+@@ -318,6 +317,10 @@ nand_upgrade_tar() {
+ 	local rootfs_type
+ 	[ "$rootfs_length" ] && rootfs_type="$(identify_tar "$tar_file" "$cmd" "$board_dir/root")"
+ 
++	# If CI_SKIP_KERNEL_MTD is set, ignore any potential kernel MTD partition that was found.
++	# This is needed if there's an MTD partition with the same name as the kernel's UBI volume.
++	[ "${CI_SKIP_KERNEL_MTD:-}" ] && kernel_mtd=
++
+ 	local ubi_kernel_length
+ 	if [ "$kernel_length" ]; then
+ 		if [ "$kernel_mtd" ]; then
+diff --git a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+index 8af61b0289263d28e508eaaa2f7a62a4f771dd7a..a589db3a8f73d6d92c9874689c5529763ae3ab2c 100755
+--- a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
++++ b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
+@@ -179,6 +179,7 @@ platform_do_upgrade() {
+ 	xiaomi,redmi-router-ax6000-stock)
+ 		CI_KERN_UBIPART=ubi_kernel
+ 		CI_ROOT_UBIPART=ubi
++		CI_DATA_UBIPART=ubi
+ 		nand_do_upgrade "$1"
+ 		;;
+ 	*)
+diff --git a/target/linux/mvebu/cortexa9/base-files/lib/upgrade/platform.sh b/target/linux/mvebu/cortexa9/base-files/lib/upgrade/platform.sh
+index 13d8e77c93cc6a642b15f534368ec625b35dcd7c..185c19afc43b4f0219f3f8f891b5a15effec6060 100755
+--- a/target/linux/mvebu/cortexa9/base-files/lib/upgrade/platform.sh
++++ b/target/linux/mvebu/cortexa9/base-files/lib/upgrade/platform.sh
+@@ -29,6 +29,7 @@ platform_do_upgrade() {
+ 		CI_KERNPART=boot
+ 		CI_KERN_UBIPART=ubi_kernel
+ 		CI_ROOT_UBIPART=ubi
++		CI_DATA_UBIPART=ubi
+ 		nand_do_upgrade "$1"
+ 		;;
+ 	buffalo,ls421de|\
+diff --git a/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh b/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh
+index 871f29e90294ddf2f6afc58fd513d9929e7b711a..f3049b782b99add5ad24c6485837ef0c1985b67a 100644
+--- a/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh
++++ b/target/linux/qualcommax/ipq807x/base-files/lib/upgrade/platform.sh
+@@ -187,6 +187,7 @@ platform_do_upgrade() {
+ 	buffalo,wxr-5950ax12)
+ 		CI_KERN_UBIPART="rootfs"
+ 		CI_ROOT_UBIPART="user_property"
++		CI_DATA_UBIPART="user_property"
+ 		buffalo_upgrade_prepare
+ 		nand_do_flash_file "$1" || nand_do_upgrade_failed
+ 		nand_do_restore_config || nand_do_upgrade_failed
+@@ -245,6 +246,7 @@ platform_do_upgrade() {
+ 		# Kernel and rootfs are placed in 2 different UBI
+ 		CI_KERN_UBIPART="ubi_kernel"
+ 		CI_ROOT_UBIPART="rootfs"
++		CI_DATA_UBIPART="rootfs"
+ 		nand_do_upgrade "$1"
+ 		;;
+ 	spectrum,sax1v1k)
+@@ -283,6 +285,7 @@ platform_do_upgrade() {
+ 	zte,mf269)
+ 		CI_KERN_UBIPART="ubi_kernel"
+ 		CI_ROOT_UBIPART="rootfs"
++		CI_DATA_UBIPART="rootfs"
+ 		nand_do_upgrade "$1"
+ 		;;
+ 	zyxel,nbg7815)
