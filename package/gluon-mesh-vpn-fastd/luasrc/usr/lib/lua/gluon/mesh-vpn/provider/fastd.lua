@@ -50,7 +50,7 @@ local function set_limit_sqm(ingress_limit, egress_limit)
 end
 
 local function sqm_available()
-	return unistd.access('/lib/gluon/mesh-vpn/sqm')
+	return unistd.access('/lib/gluon/mesh-vpn/sqm') == 0
 end
 
 function M.set_limit(ingress_limit, egress_limit)
