@@ -150,7 +150,7 @@ local function configure_mesh(radio, index, mesh_config)
 	})
 end
 
-local function set_channels(radio, radio_name, config)
+local function set_channels(radio, radio_name, config, channel_width)
 	if wireless.preserve_channels(uci) then
 		return
 	end
@@ -159,7 +159,16 @@ local function set_channels(radio, radio_name, config)
 
 	local chanlist
 	if radio.band == '5g' and is_outdoor() then
-		chanlist = config.outdoor_chanlist()
+		local original = config.outdoor_chanlist()
+		chanlist = wireless.expand_chanlist(original, channel_width)
+		if original and not chanlist then
+			io.stderr:write(string.format(
+				'warning: outdoor_chanlist=%q has no primary channels '
+				.. 'compatible with channel_width=%d on %s; '
+				.. 'falling back to unfiltered list\n',
+				original, channel_width, radio_name))
+			chanlist = original
+		end
 	end
 	uci:set('wireless', radio_name, 'channels', chanlist)
 end
@@ -178,11 +187,12 @@ wireless.foreach_radio(uci, function(radio, index, config)
 	end
 
 	local htmode = get_htmode(radio)
+	local channel_width = tonumber((htmode or ''):match('(%d+)$')) or 20
 	local beacon_interval = config.beacon_interval()
 
 	uci:delete('wireless', radio_name, 'disabled')
 
-	set_channels(radio, radio_name, config)
+	set_channels(radio, radio_name, config, channel_width)
 
 	uci:set('wireless', radio_name, 'htmode', htmode)
 	uci:set('wireless', radio_name, 'country', site.regdom())

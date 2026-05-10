@@ -170,6 +170,15 @@ wifi5 \: optional
   the outdoor mode will be completely disabled. The default setting is ``'preset'``,
   which will enable outdoor mode automatically on outdoor-capable devices.
 
+  ``outdoor_chanlist`` is interpreted together with ``channel_width``: only primary
+  channels whose full HT block (40, 80 or 160 MHz) lies entirely inside the configured
+  range are made available to the AP. For example, with
+  ``outdoor_chanlist = "100-116 132-140"`` and ``channel_width = 80`` only the primaries
+  ``100 104 108 112`` are used, because channel 116 would extend the 80 MHz block to
+  channel 128 — outside the allowed range. Widening ``channel_width`` may therefore
+  shrink the set of usable primaries; if no primary fits, Gluon falls back to the
+  unfiltered list and logs a warning.
+
   It can be beneficial to look up the WLAN channels that are used by `weather radars`_
   when constructing ``outdoor_chanlist`` to try and minimize the impact of DFS events.
 
