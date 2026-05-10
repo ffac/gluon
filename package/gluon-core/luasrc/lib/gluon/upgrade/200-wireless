@@ -162,12 +162,13 @@ local function set_channels(radio, radio_name, config, channel_width)
 		local original = config.outdoor_chanlist()
 		chanlist = wireless.expand_chanlist(original, channel_width)
 		if original and not chanlist then
+			-- The chanlist is dropped; hostapd's country3=0x4f keeps the
+			-- radio on outdoor-safe regdom channels.
 			io.stderr:write(string.format(
 				'warning: outdoor_chanlist=%q has no primary channels '
 				.. 'compatible with channel_width=%d on %s; '
-				.. 'falling back to unfiltered list\n',
+				.. 'ignoring chanlist (country3 filter still applies)\n',
 				original, channel_width, radio_name))
-			chanlist = original
 		end
 	end
 	uci:set('wireless', radio_name, 'channels', chanlist)

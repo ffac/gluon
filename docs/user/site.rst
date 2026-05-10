@@ -159,35 +159,53 @@ wifi24 \: optional
 wifi5 \: optional
   Same as `wifi24` but for the 5 GHz radio.
 
-  Additionally a range of channels that are safe to use outsides on the 5 GHz band can
-  be set up through ``outdoor_chanlist``, which allows for a space-separated list of
-  channels and channel ranges, separated by a hyphen.
-  When set this offers the outdoor mode flag for 5 GHz radios in the config mode which
-  reconfigures the AP to select its channel from outdoor chanlist, while respecting
-  regulatory specifications, and disables mesh on that radio.
-  The ``outdoors`` option in turn allows to configure when outdoor mode will be enabled.
-  When set to ``true`` all 5 GHz radios will use outdoor channels, while on ``false``
-  the outdoor mode will be completely disabled. The default setting is ``'preset'``,
-  which will enable outdoor mode automatically on outdoor-capable devices.
+  Outdoor mode reconfigures 5 GHz radios for compliance with the local outdoor
+  regulatory rules: hostapd is run with ``country3=0x4f`` so that ACS only picks
+  channels that are flagged as outdoor-safe in the regulatory database, dynamic
+  frequency selection (DFS / radar detection) is enabled, and mesh is disabled
+  on the affected radio (since neighbours need to stay on the same channel
+  permanently). Outdoor mode does **not** require ``outdoor_chanlist`` to be set —
+  the ``country3`` filter is sufficient on its own.
+
+  The ``outdoors`` option controls when outdoor mode is enabled. When set to
+  ``true`` all 5 GHz radios use outdoor channels; on ``false`` outdoor mode is
+  disabled. The default is ``'preset'``, which enables outdoor mode automatically
+  on outdoor-capable devices on first install.
+
+  ``outdoor_chanlist`` is an optional refinement: a space-separated list of
+  channels and channel ranges (separated by a hyphen) that further restricts the
+  primary-channel pool offered to ACS. It is useful for steering away from
+  specific weather-radar bands or DFS sub-ranges that have been problematic in
+  practice.
 
   ``outdoor_chanlist`` is interpreted together with ``channel_width``: only primary
-  channels whose full HT block (40, 80 or 160 MHz) lies entirely inside the configured
-  range are made available to the AP. For example, with
-  ``outdoor_chanlist = "100-116 132-140"`` and ``channel_width = 80`` only the primaries
-  ``100 104 108 112`` are used, because channel 116 would extend the 80 MHz block to
-  channel 128 — outside the allowed range. Widening ``channel_width`` may therefore
-  shrink the set of usable primaries; if no primary fits, Gluon falls back to the
-  unfiltered list and logs a warning.
+  channels whose full HT block (40, 80 or 160 MHz) lies entirely inside the
+  configured range are kept. For example, with ``outdoor_chanlist = "100-116 132-140"``
+  and ``channel_width = 80`` only the primaries ``100 104 108 112`` are used,
+  because channel 116 would extend the 80 MHz block to channel 128 — outside the
+  allowed range. Widening ``channel_width`` may therefore shrink the set of
+  usable primaries; if no primary fits, Gluon ignores the chanlist (logging a
+  warning) and falls back to the ``country3``-filtered regdom.
 
   It can be beneficial to look up the WLAN channels that are used by `weather radars`_
   when constructing ``outdoor_chanlist`` to try and minimize the impact of DFS events.
 
   .. _weather radars: https://homepage.univie.ac.at/albert.rafetseder/RADARs/help.html
 
-  ::
+  Minimal outdoor configuration::
 
     wifi5 = {
       channel = 44,
+      outdoors = 'preset',
+
+      [...]
+    },
+
+  With an explicit outdoor channel preference::
+
+    wifi5 = {
+      channel = 44,
+      outdoors = 'preset',
       outdoor_chanlist = "100-140",
 
       [...]
