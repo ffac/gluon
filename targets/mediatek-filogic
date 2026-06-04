@@ -135,3 +135,12 @@ device('xiaomi-mi-router-ax3000t-openwrt-u-boot-layout', 'xiaomi_mi-router-ax300
 -- Zyxel
 
 device('zyxel-nwa50ax-pro', 'zyxel_nwa50ax-pro')
+
+device('zyxel-ex5601-t0-ubootmod', 'zyxel_ex5601-t0-ubootmod', {
+	factory = false,
+	sysupgrade_ext = '.itb',
+	extra_images = {
+		{ '-preloader', '-preloader', '.bin' },
+		{ '-bl31-uboot', '-bl31-uboot', '.fip' },
+	},
+})
