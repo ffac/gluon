@@ -1,0 +1,141 @@
+From: Antigravity <antigravity@google.com>
+Date: Tue, 28 Jul 2026 08:15:00 +0000
+Subject: [PATCH] ath10k: populate survey data from pdev stats for QCA99X0
+
+On QCA99X0 hardware running 10.4 firmware, WMI_SERVICE_BSS_CHANNEL_INFO_64
+is either unsupported or times out. This prevents mac80211 from receiving
+vital channel survey statistics (noise floor, channel active time, channel
+busy time) which breaks mesh steering daemons like DAWN, usteer, and
+batman-adv.
+
+This patch implements a fallback mechanism. When the BSS channel info
+request fails or is unsupported, it issues a request for PDEV statistics
+(`WMI_STAT_PDEV`). The PDEV stats WMI event contains the channel noise
+floor, MAC cycle counts, and rx clear counts which are mathematically
+equivalent to the airtime metrics needed by the survey.
+
+We intercept this response in the 10.4 pull_fw_stats handler, safely
+compute the cycle deltas, and populate ar->survey.
+
+Fixes deadlock and race conditions present in earlier iterations of
+this workaround.
+
+---
+diff -urN -p ath10k_orig/mac.c ath10k_new/mac.c
+--- ath10k_orig/mac.c	2026-07-22 21:53:04.000000000 +0000
++++ ath10k_new/mac.c	2026-07-28 07:31:36.627534615 +0000
+@@ -8196,28 +8196,31 @@ ath10k_mac_update_bss_chan_survey(struct
+ 
+ 	lockdep_assert_held(&ar->conf_mutex);
+ 
+-	if (!test_bit(WMI_SERVICE_BSS_CHANNEL_INFO_64, ar->wmi.svc_map) ||
+-	    (ar->rx_channel != channel))
++	if (ar->rx_channel != channel)
+ 		return;
+ 
+-	if (ar->scan.state != ATH10K_SCAN_IDLE) {
+-		ath10k_dbg(ar, ATH10K_DBG_MAC, "ignoring bss chan info request while scanning..\n");
+-		return;
++	if (test_bit(WMI_SERVICE_BSS_CHANNEL_INFO_64, ar->wmi.svc_map)) {
++		if (ar->scan.state != ATH10K_SCAN_IDLE) {
++			ath10k_dbg(ar, ATH10K_DBG_MAC, "ignoring bss chan info request while scanning..\n");
++			return;
++		}
++
++		reinit_completion(&ar->bss_survey_done);
++
++		ret = ath10k_wmi_pdev_bss_chan_info_request(ar, type);
++		if (ret == 0) {
++			ret = wait_for_completion_timeout(&ar->bss_survey_done, 3 * HZ);
++			if (ret > 0)
++				return;
++			ath10k_warn(ar, "bss channel survey timed out, fallback to pdev stats\n");
++		}
+ 	}
+ 
+ 	reinit_completion(&ar->bss_survey_done);
+-
+-	ret = ath10k_wmi_pdev_bss_chan_info_request(ar, type);
+-	if (ret) {
+-		ath10k_warn(ar, "failed to send pdev bss chan info request\n");
+-		return;
+-	}
+-
++	ath10k_wmi_request_stats(ar, WMI_STAT_PDEV);
+ 	ret = wait_for_completion_timeout(&ar->bss_survey_done, 3 * HZ);
+-	if (!ret) {
+-		ath10k_warn(ar, "bss channel survey timed out\n");
+-		return;
+-	}
++	if (!ret)
++		ath10k_warn(ar, "pdev stats survey timed out\n");
+ }
+ 
+ static int ath10k_get_survey(struct ieee80211_hw *hw, int idx,
+diff -urN -p ath10k_orig/wmi.c ath10k_new/wmi.c
+--- ath10k_orig/wmi.c	2026-07-22 21:53:04.000000000 +0000
++++ ath10k_new/wmi.c	2026-07-28 07:32:04.255934937 +0000
+@@ -2885,6 +2885,43 @@ void ath10k_wmi_pull_pdev_stats_base(con
+ 	dst->chan_tx_power = __le32_to_cpu(src->chan_tx_pwr);
+ }
+ 
++void ath10k_update_survey_from_pdev_stats(struct ath10k *ar,
++					   const struct ath10k_fw_stats_pdev *pdev)
++{
++	struct survey_info *survey;
++	int idx;
++
++	rcu_read_lock();
++	if (!ar->rx_channel) {
++		rcu_read_unlock();
++		return;
++	}
++
++	idx = freq_to_idx(ar, ar->rx_channel->center_freq);
++	rcu_read_unlock();
++
++	if (idx >= ARRAY_SIZE(ar->survey))
++		return;
++
++	/* Note: ar->data_lock is already held by ath10k_debug_fw_stats_process */
++	survey = &ar->survey[idx];
++	survey->noise = pdev->ch_noise_floor;
++	survey->filled |= SURVEY_INFO_NOISE_DBM;
++
++	if (ar->survey_last_cycle_count && ar->survey_last_rx_clear_count) {
++		ath10k_hw_fill_survey_time(ar, survey,
++					   pdev->cycle_count,
++					   pdev->rx_clear_count,
++					   ar->survey_last_cycle_count,
++					   ar->survey_last_rx_clear_count);
++	}
++
++	ar->survey_last_cycle_count = pdev->cycle_count;
++	ar->survey_last_rx_clear_count = pdev->rx_clear_count;
++
++	complete(&ar->bss_survey_done);
++}
++
+ void ath10k_wmi_pull_pdev_stats_tx(const struct wmi_pdev_stats_tx *src,
+ 				   struct ath10k_fw_stats_pdev *dst)
+ {
+@@ -3340,6 +3377,7 @@ static int ath10k_wmi_10_4_op_pull_fw_st
+ 		ath10k_wmi_pull_pdev_stats_extra(&src->extra, dst);
+ 
+ 		list_add_tail(&dst->list, &stats->pdevs);
++		ath10k_update_survey_from_pdev_stats(ar, dst);
+ 	}
+ 
+ 	for (i = 0; i < num_pdev_ext_stats; i++) {
+diff -urN -p ath10k_orig/wmi.h ath10k_new/wmi.h
+--- ath10k_orig/wmi.h	2026-07-22 21:53:04.000000000 +0000
++++ ath10k_new/wmi.h	2026-07-28 07:32:17.640126437 +0000
+@@ -7446,6 +7446,8 @@ void ath10k_wmi_pull_pdev_stats_rx(const
+ 				   struct ath10k_fw_stats_pdev *dst);
+ void ath10k_wmi_pull_pdev_stats_extra(const struct wmi_pdev_stats_extra *src,
+ 				      struct ath10k_fw_stats_pdev *dst);
++void ath10k_update_survey_from_pdev_stats(struct ath10k *ar,
++					   const struct ath10k_fw_stats_pdev *pdev);
+ void ath10k_wmi_pull_peer_stats(const struct wmi_peer_stats *src,
+ 				struct ath10k_fw_stats_peer *dst);
+ void ath10k_wmi_put_host_mem_chunks(struct ath10k *ar,
