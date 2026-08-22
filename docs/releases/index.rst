@@ -5,6 +5,8 @@ Release Notes
   :caption: Gluon 2025.1
   :maxdepth: 2
 
+  v2025.1.3
+  v2025.1.2
   v2025.1.1
   v2025.1
 
@@ -12,6 +14,7 @@ Release Notes
   :caption: Gluon 2023.2
   :maxdepth: 2
 
+  v2023.2.6
   v2023.2.5
   v2023.2.4
   v2023.2.3
