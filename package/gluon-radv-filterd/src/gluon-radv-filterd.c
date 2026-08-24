@@ -49,8 +49,21 @@
 // seconds). Re-read it from the transtable afterwards.
 #define ORIGINATOR_CACHE_TTL 300
 
-// max execution time of a single ebtables call in nanoseconds
-#define EBTABLES_TIMEOUT 500000000 // 500ms
+// max execution time of a single nft call in nanoseconds
+#define NFTABLES_TIMEOUT 500000000 // 500ms
+
+#define NFTABLES "/usr/sbin/nft"
+
+// Sets in "table bridge gluon" driven by this daemon. radv_allow holds the
+// address of the currently elected router, radv_filter enables the filtering
+// rule at all: while it is empty the rule cannot match and every router
+// advertisement passes.
+#define SET_ALLOW "radv_allow"
+#define SET_FILTER "radv_filter"
+
+// An interval covering every address, so that the filtering rule matches
+// whatever the source address is.
+#define FILTER_ALL "00:00:00:00:00:00-ff:ff:ff:ff:ff:ff"
 
 // TQ value assigned to local routers
 #define LOCAL_TQ 512
@@ -93,7 +106,6 @@ static struct global {
 	int sock;
 	struct router *routers;
 	const char *mesh_iface;
-	const char *chain;
 	uint16_t max_tq;
 	uint16_t hysteresis_thresh;
 	struct router *best_router;
@@ -104,6 +116,76 @@ static struct global {
 
 static int fork_execvp_timeout(struct timespec *timeout, const char *file,
 		const char *const argv[]);
+
+static void error_message(int status, int errnum, char *message, ...);
+
+/* Run one nft invocation, subject to the same timeout as anything else this
+ * daemon spawns. Several commands can be passed in a single invocation
+ * separated by ";", which nft then applies as one transaction.
+ */
+static int nft(const char *const argv[]) {
+	struct timespec timeout = {
+		.tv_nsec = NFTABLES_TIMEOUT,
+	};
+
+	return fork_execvp_timeout(&timeout, NFTABLES, argv);
+}
+
+/* Accept router advertisements from mac only.
+ *
+ * Emptying radv_allow and refilling it has to happen in the same transaction
+ * as enabling radv_filter, otherwise there would be a window in which the
+ * filter is active while no address is allowed and every advertisement is
+ * dropped.
+ */
+static int filter_enable(const char *mac) {
+	char allow[F_MAC_LEN + 5];
+
+	snprintf(allow, sizeof(allow), "{ %s }", mac);
+
+	return nft((const char *[]) {
+		"nft",
+		"flush", "set", "bridge", "gluon", SET_ALLOW, ";",
+		"add", "element", "bridge", "gluon", SET_ALLOW, allow, ";",
+		"add", "element", "bridge", "gluon", SET_FILTER, "{ " FILTER_ALL " }",
+		NULL,
+	});
+}
+
+/* Stop filtering. While radv_filter is empty the filtering rule cannot match,
+ * so all router advertisements pass again.
+ */
+static int filter_disable(void) {
+	return nft((const char *[]) {
+		"nft",
+		"flush", "set", "bridge", "gluon", SET_FILTER, ";",
+		"flush", "set", "bridge", "gluon", SET_ALLOW,
+		NULL,
+	});
+}
+
+/* Our sets live in "table bridge gluon", which every firewall reload flushes
+ * and recreates. Rather than hooking into every possible trigger of a reload,
+ * notice that the set lost its contents and program it again.
+ */
+static bool filter_lost(void) {
+	char line[256];
+	FILE *f;
+	bool empty = true;
+
+	f = popen(NFTABLES " list set bridge gluon " SET_ALLOW " 2>/dev/null", "r");
+	if (!f)
+		return false;
+
+	while (fgets(line, sizeof(line), f)) {
+		if (strstr(line, "elements = {"))
+			empty = false;
+	}
+
+	pclose(f);
+
+	return empty;
+}
 
 static void error_message(int status, int errnum, char *message, ...) {
 	va_list ap;
@@ -135,9 +217,6 @@ static int timespec_diff(struct timespec *tv1, struct timespec *tv2,
 
 static void cleanup(void) {
 	struct router *router;
-	struct timespec timeout = {
-		.tv_nsec = EBTABLES_TIMEOUT,
-	};
 
 	close(G.sock);
 
@@ -147,16 +226,9 @@ static void cleanup(void) {
 		free(router);
 	}
 
-	if (G.chain) {
-		/* Reset chain to accept everything again */
-		if (fork_execvp_timeout(&timeout, "ebtables-tiny", (const char *[])
-				{ "ebtables-tiny", "-F", G.chain, NULL }))
-			DEBUG_MSG("warning: flushing ebtables chain %s failed, not adding a new rule", G.chain);
-
-		if (fork_execvp_timeout(&timeout, "ebtables-tiny", (const char *[])
-				{ "ebtables-tiny", "-A", G.chain, "-j", "ACCEPT", NULL }))
-			DEBUG_MSG("warning: adding new rule to ebtables chain %s failed", G.chain);
-	}
+	/* Let everything pass again */
+	if (filter_disable())
+		DEBUG_MSG("warning: disabling the router advertisement filter failed");
 }
 
 static void usage(const char *msg) {
@@ -164,14 +236,11 @@ static void usage(const char *msg) {
 		fprintf(stderr, "ERROR: %s\n\n", msg);
 	}
 	fprintf(stderr,
-		"Usage: %s [-m <mesh_iface>] [-t <thresh>] -c <chain> -i <iface>\n\n"
+		"Usage: %s [-m <mesh_iface>] [-t <thresh>] -i <iface>\n\n"
 		"  -m <mesh_iface>  B.A.T.M.A.N. advanced mesh interface used to get metric\n"
 		"                   information (\"TQ\") for the available gateways. Default: bat0\n"
 		"  -t <thresh>      Minimum TQ difference required to switch the gateway.\n"
 		"                   Default: 0\n"
-		"  -c <chain>       ebtables chain that should be managed by the daemon. The\n"
-		"                   chain already has to exist on program invocation and should\n"
-		"                   have a DROP policy. It will be flushed by the program!\n"
 		"  -i <iface>       Interface to listen on for router advertisements. Should be\n"
 		"                   <mesh_iface> or a bridge on top of it, as no metric\n"
 		"                   information will be available for hosts on other interfaces.\n\n",
@@ -247,7 +316,7 @@ static void parse_cmdline(int argc, char *argv[]) {
 	unsigned int ifindex;
 	unsigned long int threshold;
 	char *endptr;
-	while ((c = getopt(argc, argv, "c:hi:m:t:")) != -1) {
+	while ((c = getopt(argc, argv, "hi:m:t:")) != -1) {
 		switch (c) {
 			case 'i':
 				if (G.sock >= 0)
@@ -259,9 +328,6 @@ static void parse_cmdline(int argc, char *argv[]) {
 				break;
 			case 'm':
 				G.mesh_iface = optarg;
-				break;
-			case 'c':
-				G.chain = optarg;
 				break;
 			case 't':
 				threshold = strtoul(optarg, &endptr, 10);
@@ -664,18 +730,25 @@ static bool election_required(void)
 	return true;
 }
 
-static void update_ebtables(void) {
-	struct timespec timeout = {
-		.tv_nsec = EBTABLES_TIMEOUT,
-	};
+static void update_filter(void) {
 	char mac[F_MAC_LEN + 1];
 	struct router *router;
 
 	if (!election_required()) {
-		DEBUG_MSG(F_MAC " is still good enough with TQ=%d (max_tq=%d), not executing ebtables",
-			F_MAC_VAR(G.best_router->src),
-			G.best_router->tq,
-			G.max_tq);
+		if (!filter_lost()) {
+			DEBUG_MSG(F_MAC " is still good enough with TQ=%d (max_tq=%d), not calling nft",
+				F_MAC_VAR(G.best_router->src),
+				G.best_router->tq,
+				G.max_tq);
+			return;
+		}
+
+		/* The sets were emptied behind our back, program them again */
+		snprintf(mac, sizeof(mac), F_MAC, F_MAC_VAR(G.best_router->src));
+
+		if (filter_enable(mac))
+			error_message(0, 0, "warning: could not restore the filter for %s", mac);
+
 		return;
 	}
 
@@ -697,12 +770,8 @@ static void update_ebtables(void) {
 			G.max_tq);
 	G.best_router = router;
 
-	if (fork_execvp_timeout(&timeout, "ebtables-tiny", (const char *[])
-			{ "ebtables-tiny", "-F", G.chain, NULL }))
-		error_message(0, 0, "warning: flushing ebtables chain %s failed, not adding a new rule", G.chain);
-	else if (fork_execvp_timeout(&timeout, "ebtables-tiny", (const char *[])
-			{ "ebtables-tiny", "-A", G.chain, "-s", mac, "-j", "ACCEPT", NULL }))
-		error_message(0, 0, "warning: adding new rule to ebtables chain %s failed", G.chain);
+	if (filter_enable(mac))
+		error_message(0, 0, "warning: could not restrict router advertisements to %s", mac);
 }
 
 static void invalidate_originators(void)
@@ -738,9 +807,6 @@ int main(int argc, char *argv[]) {
 
 	if (G.sock < 0)
 		usage("No interface set!");
-
-	if (G.chain == NULL)
-		usage("No chain set!");
 
 	G.stop_daemon = 0;
 	signal(SIGINT, sighandler);
@@ -780,7 +846,7 @@ int main(int argc, char *argv[]) {
 				}
 
 				update_tqs();
-				update_ebtables();
+				update_filter();
 
 				next_update = now;
 				next_update.tv_sec += MIN_INTERVAL;

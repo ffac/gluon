@@ -4,12 +4,17 @@
 #include <libgluonutil.h>
 #include <net/ethernet.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "mac.h"
 
 static struct json_object * get_radv_filter() {
-	FILE *f = popen("exec ebtables-tiny -L RADV_FILTER", "r");
+	/* The daemon keeps the address of the elected router in this set, and
+	 * empties it while no filtering takes place.
+	 */
+	FILE *f = popen("exec /usr/sbin/nft list set bridge gluon radv_allow 2>/dev/null", "r");
 	char *line = NULL;
+	char *elements;
 	size_t len = 0;
 	struct ether_addr mac = {};
 	struct ether_addr unspec = {};
@@ -19,7 +24,11 @@ static struct json_object * get_radv_filter() {
 		return NULL;
 
 	while (getline(&line, &len, f) > 0) {
-		if (sscanf(line, "-s " F_MAC " -j ACCEPT\n", F_MAC_VAR_REF(mac)) == ETH_ALEN)
+		elements = strstr(line, "elements = {");
+		if (!elements)
+			continue;
+
+		if (sscanf(elements, "elements = { " F_MAC, F_MAC_VAR_REF(mac)) == ETH_ALEN)
 			break;
 	}
 	free(line);
