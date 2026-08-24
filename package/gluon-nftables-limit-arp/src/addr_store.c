@@ -130,6 +130,27 @@ static void addr_store_dump(struct addr_store *store)
 	}
 }
 
+/* Forget all entries without removing them from nftables. Used when the
+ * nftables sets were emptied behind our back, so that the next update adds
+ * every address again.
+ */
+void addr_store_reset(struct addr_store *store)
+{
+	struct addr_list *node, *next;
+	int i;
+
+	for (i = 0; i < ADDR_STORE_NUM_BUCKETS; i++) {
+		node = store->buckets[i];
+		store->buckets[i] = NULL;
+
+		while (node) {
+			next = node->next;
+			free(node);
+			node = next;
+		}
+	}
+}
+
 void addr_store_cleanup(struct addr_store *store)
 {
 	struct addr_list *node, *prev;

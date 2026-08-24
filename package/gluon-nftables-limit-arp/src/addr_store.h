@@ -25,5 +25,6 @@ int addr_store_init(size_t addr_len,
 		struct addr_store *store);
 int addr_store_add(void *addr, struct addr_store *store);
 void addr_store_cleanup(struct addr_store *store);
+void addr_store_reset(struct addr_store *store);
 
 #endif /* _ADDR_STORE_H_ */

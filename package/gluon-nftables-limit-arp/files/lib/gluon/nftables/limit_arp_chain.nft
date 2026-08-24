@@ -1,0 +1,37 @@
+# Addresses of client devices, taken from the batman-adv translation table,
+# and target addresses present in the batman-adv DAT cache. Both are
+# maintained by gluon-arp-limiter.
+set limitmac {
+	type ether_addr
+}
+
+set datips {
+	type ipv4_addr
+}
+
+# One rate limit per client device. A plain limit statement keeps a single
+# bucket for the whole rule, which all devices would then share; keying a
+# dynamic set on the source address gives each of them its own.
+set arplimit_rate {
+	type ether_addr
+	size 1024
+	flags dynamic,timeout
+	timeout 5m
+}
+
+chain arplimit {
+	# Requests for a target in the DAT cache are answered locally and never
+	# reach the mesh, so they are neither counted nor limited.
+	arp ptype 0x0800 arp plen 4 arp daddr ip @datips return
+
+	# Known client devices are allowed six requests per minute each.
+	ether saddr @limitmac \
+		add @arplimit_rate { ether saddr limit rate over 6/minute burst 50 packets } \
+		counter \
+		drop
+
+	# On top of that, the node as a whole passes one request per second.
+	limit rate over 1/second burst 50 packets \
+		counter \
+		drop
+}

@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,7 +15,7 @@
 
 #define BATCTL_DC "/usr/sbin/batctl dc -H -n"
 #define BATCTL_TL "/usr/sbin/batctl tl -H -n"
-#define EBTABLES "/usr/sbin/ebtables-tiny"
+#define NFTABLES "/usr/sbin/nft"
 
 #define BUILD_BUG_ON(check) ((void)sizeof(int[1-2*!!(check)]))
 
@@ -39,13 +40,13 @@ static void ebt_ip_call(char *mod, struct in_addr ip)
 	int ret;
 
 	snprintf(str, sizeof(str),
-			EBTABLES " %s ARP_LIMIT_DATCHECK -p ARP --arp-ip-dst %s -j mark --mark-or 0x2 --mark-target RETURN",
+			NFTABLES " %s element bridge gluon datips { %s }",
 			mod, inet_ntoa(ip));
 
 	ret = system(str);
 	if (ret)
 		fprintf(stderr,
-			"%i: Calling ebtables for DAT failed with status %i\n",
+			"%i: Calling nft for DAT failed with status %i\n",
 			clock, ret);
 }
 
@@ -53,7 +54,7 @@ static void ip_node_destructor(struct addr_list *node)
 {
 	struct in_addr *ip = (struct in_addr *)node->addr;
 
-	ebt_ip_call("-D", *ip);
+	ebt_ip_call("delete", *ip);
 }
 
 static void ebt_mac_limit_call(char *mod, struct mac_addr *mac)
@@ -62,48 +63,26 @@ static void ebt_mac_limit_call(char *mod, struct mac_addr *mac)
 	int ret;
 
 	snprintf(str, sizeof(str),
-			EBTABLES " %s ARP_LIMIT_TLCHECK --source %s --limit 6/min --limit-burst 50 -j RETURN",
+			NFTABLES " %s element bridge gluon limitmac { %s }",
 			mod, mac_ntoa(mac));
 
 	ret = system(str);
 	if (ret)
 		fprintf(stderr,
-			"%i: Calling ebtables for TL failed with status %i\n",
-			clock, ret);
-}
-
-static void ebt_mac_ret_call(char *mod, struct mac_addr *mac, int add)
-{
-	char str[128];
-	int ret;
-
-	snprintf(str, sizeof(str),
-			EBTABLES " %s ARP_LIMIT_TLCHECK %s --source %s -j DROP",
-			mod, add ? "2" : "", mac_ntoa(mac));
-
-	ret = system(str);
-	if (ret)
-		fprintf(stderr,
-			"%i: Calling ebtables for TL failed with status %i\n",
+			"%i: Calling nft for TL failed with status %i\n",
 			clock, ret);
 }
 
 static void ebt_mac_call(char *mod, struct mac_addr *mac)
 {
-	if (!strncmp(mod, "-D", strlen(mod))) {
-		ebt_mac_ret_call(mod, mac, 0);
-		ebt_mac_limit_call(mod, mac);
-	} else {
-		ebt_mac_limit_call(mod, mac);
-		ebt_mac_ret_call(mod, mac, 1);
-	}
+	ebt_mac_limit_call(mod, mac);
 }
 
 static void mac_node_destructor(struct addr_list *node)
 {
 	struct mac_addr *mac = (struct mac_addr *)node->addr;
 
-	ebt_mac_call("-D", mac);
+	ebt_mac_call("delete", mac);
 }
 
 static int dat_parse_line(const char *line, struct in_addr *ip)
@@ -141,7 +120,7 @@ static void ebt_add_ip(struct in_addr ip)
 	if (ret)
 		return;
 
-	ebt_ip_call("-I", ip);
+	ebt_ip_call("add", ip);
 }
 
 static void ebt_add_mac(struct mac_addr *mac)
@@ -152,7 +131,7 @@ static void ebt_add_mac(struct mac_addr *mac)
 	if (ret)
 		return;
 
-	ebt_mac_call("-I", mac);
+	ebt_mac_call("add", mac);
 }
 
 static void ebt_dat_update(void)
@@ -168,7 +147,7 @@ static void ebt_dat_update(void)
 		fprintf(stderr, "%i: Error: Could not call batctl dc\n", clock);
 		return;
 	}
-	
+
 	while (1) {
 		pline = fgets(line, sizeof(line), fp);
 		if (!pline) {
@@ -257,18 +236,58 @@ static void ebt_tl_update(void)
 
 static void ebt_dat_flush(void)
 {
-	int ret = system(EBTABLES " -F ARP_LIMIT_DATCHECK");
+	int ret = system(NFTABLES " flush set bridge gluon datips");
 
 	if (ret)
-		fprintf(stderr, "Error flushing ARP_LIMIT_DATCHECK\n");
+		fprintf(stderr, "Error flushing arplimit datips set\n");
 }
 
 static void ebt_tl_flush(void)
 {
-	int ret = system(EBTABLES " -F ARP_LIMIT_TLCHECK");
+	int ret = system(NFTABLES " flush set bridge gluon limitmac");
 
 	if (ret)
-		fprintf(stderr, "Error flushing ARP_LIMIT_TLCHECK\n");
+		fprintf(stderr, "Error flushing arplimit limitmac\n");
+}
+
+/* Our sets are part of "table bridge gluon", which is flushed and recreated
+ * by every firewall reload, while the address stores still remember all
+ * addresses as being present. Rather than hooking into every possible trigger
+ * of a reload, check whether a set lost its contents and drop the matching
+ * store, so the following update repopulates the set.
+ */
+static bool nft_set_is_empty(const char *set)
+{
+	char cmd[128];
+	char line[256];
+	FILE *fp;
+	bool empty = true;
+
+	snprintf(cmd, sizeof(cmd),
+			NFTABLES " list set bridge gluon %s 2>/dev/null",
+			set);
+
+	fp = popen(cmd, "r");
+	if (!fp) {
+		fprintf(stderr, "%i: Error: Could not call nft for set %s\n",
+			clock, set);
+		return false;
+	}
+
+	while (fgets(line, sizeof(line), fp)) {
+		if (strstr(line, "elements = {"))
+			empty = false;
+	}
+
+	pclose(fp);
+
+	return empty;
+}
+
+static void nft_resync(const char *set, struct addr_store *store)
+{
+	if (nft_set_is_empty(set))
+		addr_store_reset(store);
 }
 
 int main(int argc, char *argv[])
@@ -286,9 +305,11 @@ int main(int argc, char *argv[])
 			addr_mac_ntoa, &mac_store);
 
 	while (1) {
+		nft_resync("datips", &ip_store);
 		ebt_dat_update();
 		addr_store_cleanup(&ip_store);
 
+		nft_resync("limitmac", &mac_store);
 		ebt_tl_update();
 		addr_store_cleanup(&mac_store);
 
