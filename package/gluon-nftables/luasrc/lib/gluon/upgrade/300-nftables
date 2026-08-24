@@ -1,0 +1,268 @@
+#!/usr/bin/lua
+
+local uci = require('simple-uci').cursor()
+local glob = require 'posix.glob'
+
+-- Library
+
+local function starts_with(str, start)
+	return str:sub(1, #start) == start
+end
+
+local function basepath(str)
+	return str:match("([^./\\]+).lua")
+end
+
+local function path(name)
+	return '/lib/gluon/nftables/' .. name .. '.nft'
+end
+
+local function write_lines(file, lines)
+	for _, line in ipairs(lines) do
+		file:write(line .. '\n')
+	end
+end
+
+local function read_include(file)
+	local f = assert(io.open(path(file), 'rb'))
+	local content = f:read('*all')
+	f:close()
+	return content
+end
+
+-- Functions
+
+local function include(name, parameters)
+	local boilerplate = {
+		type = 'nftables',
+		path = path(name),
+	}
+
+	for k, v in pairs(parameters) do
+		boilerplate[k] = v
+	end
+
+	uci:section('firewall', 'include', 'gluon_nftables_' .. name, boilerplate)
+end
+
+local function rule(name, chain, content)
+	local file = assert(io.open(path(name), 'w'))
+	file:write(content .. '\n')
+	file:close()
+
+	include(name, {
+		position = 'chain-post',
+		chain = chain,
+	})
+end
+
+-- The ruleset this is derived from used two ebtables tables, 'filter' and
+-- 'nat'. On bridges these do not differ in what they can do, but in when they
+-- run: the kernel registers the nat table at different netfilter priorities
+-- than the filter table (prerouting at -300 instead of -200, output at 100,
+-- postrouting at 300). Dropping IGMP/MLD in the nat PREROUTING chain
+-- therefore happens before any filter rule sees the frame.
+--
+-- nftables does not need a second table for that, so everything lives in the
+-- single 'table bridge gluon' and the ordering is expressed by a second set
+-- of base chains registered at the priorities the kernel uses for the
+-- ebtables nat table ('dstnat', 'out' and 'srcnat'). bridge_chain() and
+-- bridge_rule() take the ebtables table name as an optional last argument
+-- ('filter' when omitted) to select between the two sets. As OUTPUT exists in
+-- both tables, the nft names of the nat base chains are prefixed with 'nat_'.
+-- Custom chains simply keep their lowercased name; for them the table
+-- argument only decides which base chains may jump into them.
+
+local bridge = {
+	chains = {},
+	table = {
+		pre = {
+			'table bridge gluon',
+			'flush table bridge gluon',
+			'table bridge gluon {',
+		},
+		post = {
+
+		},
+	}
+}
+
+-- nft chains always fall through at their end, so an ebtables chain policy
+-- other than RETURN becomes a terminal rule appended after all other rules.
+local policies = {
+	DROP = 'drop',
+	ACCEPT = 'accept',
+}
+
+local function chain_key(name, tbl)
+	return (tbl or 'filter') .. '/' .. name
+end
+
+local function get_chain(name, tbl)
+	local chain = bridge.chains[chain_key(name, tbl)]
+
+	if chain == nil then
+		error('No bridge chain ' .. name .. ' in table ' .. (tbl or 'filter'))
+	end
+
+	return chain
+end
+
+-- ebtables table, chain name, nft chain name, nft chain declaration
+for _, base in ipairs({
+	{ 'filter', 'INPUT', 'input', 'type filter hook input priority filter; policy accept;' },
+	{ 'filter', 'FORWARD', 'forward', 'type filter hook forward priority filter; policy accept;' },
+	{ 'filter', 'OUTPUT', 'output', 'type filter hook output priority filter; policy accept;' },
+	{ 'nat', 'PREROUTING', 'nat_prerouting', 'type filter hook prerouting priority dstnat; policy accept;' },
+	{ 'nat', 'OUTPUT', 'nat_output', 'type filter hook output priority out; policy accept;' },
+	{ 'nat', 'POSTROUTING', 'nat_postrouting', 'type filter hook postrouting priority srcnat; policy accept;' },
+}) do
+	bridge.chains[chain_key(base[2], base[1])] = {
+		name = base[3],
+		decl = base[4],
+		rules = {},
+	}
+end
+
+local function bridge_rule(chain, content, tbl)
+	table.insert(get_chain(chain, tbl).rules, content)
+end
+
+local function bridge_table(position, content)
+	if bridge.table[position] == nil then
+		error('No bridge position ' .. position)
+	end
+
+	table.insert(bridge.table[position], content)
+end
+
+local function bridge_chain(name, policy, tbl)
+	local key = chain_key(name, tbl)
+	local nft_name = name:lower()
+
+	if bridge.chains[key] ~= nil then
+		error('Chain already exists ' .. name)
+	end
+
+	if policy ~= nil and policy ~= 'RETURN' and policies[policy] == nil then
+		error('Unknown chain policy ' .. policy)
+	end
+
+	-- All chains share one nft table, so their names must be unique
+	-- across the emulated ebtables tables as well.
+	for _, chain in pairs(bridge.chains) do
+		if chain.name == nft_name then
+			error('Chain name already in use ' .. nft_name)
+		end
+	end
+
+	bridge.chains[key] = {
+		name = nft_name,
+		policy = policy,
+		rules = {},
+	}
+end
+
+local function bridge_include_rule(chain, file, tbl)
+	table.insert(get_chain(chain, tbl).rules, read_include(file))
+end
+
+local function bridge_include_table(position, file)
+	bridge_table(position, read_include(file))
+end
+
+-- Loader
+
+local function load_file(file)
+	local nft = assert(loadfile(file))
+
+	local fncs = setmetatable({
+		path = file,
+		include = include,
+		rule = rule,
+
+		bridge_rule = bridge_rule,
+		bridge_chain = bridge_chain,
+		bridge_table = bridge_table,
+		bridge_include_rule = bridge_include_rule,
+		bridge_include_table = bridge_include_table,
+	}, { __index = _G })
+
+	local env = setmetatable({}, { __index = fncs })
+	setfenv(nft, env)
+
+	nft()
+end
+
+-- Clean old rules
+
+uci:foreach('firewall', 'include', function(i)
+	if starts_with(i['.name'], 'gluon_nftables_') then
+		uci:delete('firewall', i['.name'])
+	end
+end)
+
+-- Load new rules
+
+for _, file in ipairs(glob.glob("/lib/gluon/nftables/*.lua", 0) or {}) do
+	print(' - NFTables: ' .. basepath(file))
+	load_file(file)
+end
+
+local b = assert(io.open(path('bridge'), 'w'))
+
+include('bridge', {
+	position = 'ruleset-pre',
+})
+
+write_lines(b, bridge.table.pre)
+
+-- Emit the chains in a stable order, so the generated ruleset does not depend
+-- on the hash order of bridge.chains.
+local keys = {}
+for key in pairs(bridge.chains) do
+	table.insert(keys, key)
+end
+table.sort(keys)
+
+-- nft can only resolve a jump into a chain that already exists, while the
+-- rule files are free to add a jump before the target chain is created. All
+-- chains are therefore declared first and filled afterwards. Base chains
+-- without rules are left out entirely: an empty chain with an accept policy
+-- would only register an unused netfilter hook.
+for _, key in ipairs(keys) do
+	local chain = bridge.chains[key]
+
+	if chain.decl == nil or #chain.rules > 0 then
+		b:write('chain ' .. chain.name .. ' {\n')
+
+		if chain.decl ~= nil then
+			b:write(chain.decl .. '\n')
+		end
+
+		b:write('}\n')
+	end
+end
+
+for _, key in ipairs(keys) do
+	local chain = bridge.chains[key]
+	local terminal = policies[chain.policy]
+
+	if #chain.rules > 0 or terminal ~= nil then
+		b:write('chain ' .. chain.name .. ' {\n')
+		write_lines(b, chain.rules)
+
+		if terminal ~= nil then
+			b:write(terminal .. '\n')
+		end
+
+		b:write('}\n')
+	end
+end
+
+write_lines(b, bridge.table.post)
+
+b:write('}\n')
+b:close()
+
+uci:save('firewall')
