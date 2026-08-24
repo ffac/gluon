@@ -1,0 +1,74 @@
+From: Florian Maurer <fmaurer@disroot.org>
+Date: Mon, 24 Aug 2026 12:05:07 +0000
+Subject: wifi: mt76: mt7915: handle narrow bandwidths in channel configuration
+
+diff --git a/package/kernel/mt76/patches/901-wifi-mt76-mt7915-skip-Tx-DPD-for-narrow-bandwidths.patch b/package/kernel/mt76/patches/901-wifi-mt76-mt7915-skip-Tx-DPD-for-narrow-bandwidths.patch
+new file mode 100644
+--- /dev/null
++++ b/package/kernel/mt76/patches/901-wifi-mt76-mt7915-skip-Tx-DPD-for-narrow-bandwidths.patch
+@@ -0,0 +1,65 @@
++From 3207e18b3540c669ff5371fd3ad84265c3432ff1 Mon Sep 17 00:00:00 2001
++From: Florian Maurer <fmaurer@disroot.org>
++Date: Mon, 24 Aug 2026 12:04:23 +0000
++Subject: [PATCH mt76] wifi: mt76: mt7915: handle narrow bandwidths in channel
++ configuration
++
++mt7915_mcu_apply_tx_dpd() looks the current centre frequency up in a
++table of pre-calibrated frequencies and returns -EINVAL when it is not
++found. mt7915_set_channel() calls it early and aborts on any error, so a
++missing pre-calibration entry fails the whole channel switch.
++
++The tables list the centre frequencies of the 20 MHz and wider channels
++only. A half- or quarter-clocked channel can never match one, which
++makes every attempt to tune such a channel fail on a device that has
++pre-calibration data in its EEPROM. Return early and leave existing DPD
++settings in place.
++
++Additionally, the MT7915 MCU firmware validator only accepts standard
++channel bandwidths (20, 40, 80, 160 MHz) in set_chan_info and stalls if
++passed narrow bandwidth codes (5/10 MHz). Fall back to CMD_CBW_20MHZ
++when issuing MCU_EXT_CMD(CHANNEL_SWITCH) and MCU_EXT_CMD(SET_RX_PATH) so
++the RF PLL locks to the channel center without stalling the firmware.
++
++Signed-off-by: Florian Maurer <fmaurer@disroot.org>
++---
++ mt7915/mcu.c | 17 +++++++++++++++++
++ 1 file changed, 17 insertions(+)
++
++diff --git a/mt7915/mcu.c b/mt7915/mcu.c
++index 4348c280..13c52050 100644
++--- a/mt7915/mcu.c
+++++ b/mt7915/mcu.c
++@@ -2845,6 +2845,14 @@ int mt7915_mcu_set_chan_info(struct mt7915_phy *phy, int cmd)
++ 		.channel_band = ch_band[chandef->chan->band],
++ 	};
++ 
+++	/* The MT7915 MCU firmware only accepts standard bandwidths (20, 40,
+++	 * 80, 160 MHz) in set_chan_info. Fall back to 20 MHz for narrow
+++	 * bandwidths so the RF PLL locks to the channel center without
+++	 * stalling the firmware.
+++	 */
+++	if (req.bw == CMD_CBW_5MHZ || req.bw == CMD_CBW_10MHZ)
+++		req.bw = CMD_CBW_20MHZ;
+++
++ #ifdef CONFIG_NL80211_TESTMODE
++ 	if (phy->mt76->test.tx_antenna_mask &&
++ 	    mt76_testmode_enabled(phy->mt76)) {
++@@ -3163,6 +3171,15 @@ int mt7915_mcu_apply_tx_dpd(struct mt7915_phy *phy)
++ 	if (!(eep[offs] & dpd_mask))
++ 		return 0;
++ 
+++	/* The pre-calibration data is indexed by the centre frequencies of
+++	 * the 20 MHz and wider channels only, so there is no entry to apply
+++	 * for the half- and quarter-clocked bandwidths. Keep whatever is
+++	 * already programmed instead of failing the channel switch.
+++	 */
+++	if (chandef->width == NL80211_CHAN_WIDTH_5 ||
+++	    chandef->width == NL80211_CHAN_WIDTH_10)
+++		return 0;
+++
++ 	idx = mt7915_dpd_freq_idx(dev, center_freq, chandef->width);
++ 	if (idx < 0)
++ 		return -EINVAL;
++-- 
++2.47.3

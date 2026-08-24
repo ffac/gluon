@@ -1,0 +1,129 @@
+From: Florian Maurer <fmaurer@disroot.org>
+Date: Mon, 24 Aug 2026 12:05:07 +0000
+Subject: wifi: mt76: add optional support for 5 and 10 MHz channels
+
+diff --git a/package/kernel/mt76/patches/902-wifi-mt76-add-optional-support-for-5-and-10-MHz-chan.patch b/package/kernel/mt76/patches/902-wifi-mt76-add-optional-support-for-5-and-10-MHz-chan.patch
+new file mode 100644
+--- /dev/null
++++ b/package/kernel/mt76/patches/902-wifi-mt76-add-optional-support-for-5-and-10-MHz-chan.patch
+@@ -0,0 +1,120 @@
++From a412cf60d684eb29a85446d5a1ee91dd937f56b2 Mon Sep 17 00:00:00 2001
++From: Florian Maurer <fmaurer@disroot.org>
++Date: Mon, 24 Aug 2026 12:04:23 +0000
++Subject: [PATCH mt76] wifi: mt76: add optional support for 5 and 10 MHz
++ channels
++
++IEEE 802.11p / ETSI ITS-G5 uses half-clocked 10 MHz channels in the
++5.9 GHz band. The connac channel switch command already carries the
++narrow bandwidths through mt76_connac_chan_bw(), but cfg80211 rejects a
++10 MHz chandef before it ever reaches the driver because the wiphy does
++not advertise WIPHY_FLAG_SUPPORTS_5_10_MHZ, and the 5 GHz channel list
++ends at channel 177.
++
++Add an enable_5_10mhz module parameter, off by default, that advertises
++the capability and registers the ITS-G5 channel centres. The extra
++channels are appended to the end of the channel table so that leaving
++the parameter unset registers exactly the same channel list as before
++and sets exactly the same wiphy flags as before.
++
++No regulatory domain permits regular operation on these channels, so
++they are marked IEEE80211_CHAN_CAN_MONITOR: a monitor interface can tune
++them for passive reception, while any attempt to transmit is still
++refused by the regulatory code.
++
++Signed-off-by: Florian Maurer <fmaurer@disroot.org>
++---
++ mac80211.c | 43 +++++++++++++++++++++++++++++++++++++++++--
++ 1 file changed, 41 insertions(+), 2 deletions(-)
++
++diff --git a/mac80211.c b/mac80211.c
++index ff86f4f5..89afee40 100644
++--- a/mac80211.c
+++++ b/mac80211.c
++@@ -4,8 +4,14 @@
++  */
++ #include <linux/sched.h>
++ #include <linux/of.h>
+++#include <linux/moduleparam.h>
++ #include "mt76.h"
++ 
+++static bool enable_5_10mhz;
+++module_param(enable_5_10mhz, bool, 0444);
+++MODULE_PARM_DESC(enable_5_10mhz,
+++		 "Enable 5 and 10 MHz channel widths and expose the 5.9 GHz ITS-G5 channels for monitoring (default: off)");
+++
++ #define CHAN2G(_idx, _freq) {			\
++ 	.band = NL80211_BAND_2GHZ,		\
++ 	.center_freq = (_freq),			\
++@@ -20,6 +26,18 @@
++ 	.max_power = 30,			\
++ }
++ 
+++/* Channels that are only ever usable for passive monitoring. They carry
+++ * IEEE80211_CHAN_CAN_MONITOR so that a monitor interface may tune them even
+++ * though no regulatory domain permits regular operation there.
+++ */
+++#define CHAN5G_MON(_idx, _freq) {		\
+++	.band = NL80211_BAND_5GHZ,		\
+++	.center_freq = (_freq),			\
+++	.hw_value = (_idx),			\
+++	.max_power = 30,			\
+++	.flags = IEEE80211_CHAN_CAN_MONITOR,	\
+++}
+++
++ #define CHAN6G(_idx, _freq) {			\
++ 	.band = NL80211_BAND_6GHZ,		\
++ 	.center_freq = (_freq),			\
++@@ -76,8 +94,22 @@ static const struct ieee80211_channel mt76_channels_5ghz[] = {
++ 	CHAN5G(169, 5845),
++ 	CHAN5G(173, 5865),
++ 	CHAN5G(177, 5885),
+++
+++	/* IEEE 802.11p / ETSI ITS-G5 channels in the 5.9 GHz band. These are
+++	 * appended after the regular channels so that they can be left out
+++	 * simply by registering fewer of them, see mt76_init_sband_5g().
+++	 */
+++	CHAN5G_MON(172, 5860),
+++	CHAN5G_MON(174, 5870),
+++	CHAN5G_MON(176, 5880),
+++	CHAN5G_MON(178, 5890),
+++	CHAN5G_MON(180, 5900),
+++	CHAN5G_MON(182, 5910),
+++	CHAN5G_MON(184, 5920),
++ };
++ 
+++#define MT76_N_CHANNELS_5GHZ_ITS	7
+++
++ static const struct ieee80211_channel mt76_channels_6ghz[] = {
++ 	/* UNII-5 */
++ 	CHAN6G(1, 5955),
++@@ -373,11 +405,15 @@ static int
++ mt76_init_sband_5g(struct mt76_phy *phy, struct ieee80211_rate *rates,
++ 		   int n_rates, bool vht)
++ {
+++	int n_chan = ARRAY_SIZE(mt76_channels_5ghz);
+++
++ 	phy->hw->wiphy->bands[NL80211_BAND_5GHZ] = &phy->sband_5g.sband;
++ 
+++	if (!enable_5_10mhz)
+++		n_chan -= MT76_N_CHANNELS_5GHZ_ITS;
+++
++ 	return mt76_init_sband(phy, &phy->sband_5g, mt76_channels_5ghz,
++-			       ARRAY_SIZE(mt76_channels_5ghz), rates,
++-			       n_rates, true, vht);
+++			       n_chan, rates, n_rates, true, vht);
++ }
++ 
++ static int
++@@ -445,6 +481,9 @@ mt76_phy_init(struct mt76_phy *phy, struct ieee80211_hw *hw)
++ 			WIPHY_FLAG_SUPPORTS_TDLS |
++ 			WIPHY_FLAG_AP_UAPSD;
++ 
+++	if (enable_5_10mhz)
+++		wiphy->flags |= WIPHY_FLAG_SUPPORTS_5_10_MHZ;
+++
++ 	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_CQM_RSSI_LIST);
++ 	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_AIRTIME_FAIRNESS);
++ 	wiphy_ext_feature_set(wiphy, NL80211_EXT_FEATURE_AQL);
++-- 
++2.47.3

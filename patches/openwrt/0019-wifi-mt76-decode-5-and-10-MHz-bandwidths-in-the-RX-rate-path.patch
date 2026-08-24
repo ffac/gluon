@@ -1,0 +1,131 @@
+From: Florian Maurer <fmaurer@disroot.org>
+Date: Mon, 24 Aug 2026 12:05:07 +0000
+Subject: wifi: mt76: decode 5 and 10 MHz bandwidths in the RX rate path
+
+diff --git a/package/kernel/mt76/patches/900-wifi-mt76-decode-5-and-10-MHz-bandwidths-in-rx-rate.patch b/package/kernel/mt76/patches/900-wifi-mt76-decode-5-and-10-MHz-bandwidths-in-rx-rate.patch
+new file mode 100644
+--- /dev/null
++++ b/package/kernel/mt76/patches/900-wifi-mt76-decode-5-and-10-MHz-bandwidths-in-rx-rate.patch
+@@ -0,0 +1,122 @@
++From 20ae4b84f2f6614d03d077ef76108e9841be1f25 Mon Sep 17 00:00:00 2001
++From: Florian Maurer <fmaurer@disroot.org>
++Date: Mon, 24 Aug 2026 12:04:23 +0000
++Subject: [PATCH mt76] wifi: mt76: decode 5 and 10 MHz bandwidths in the RX
++ rate path
++
++mt76_connac2_mac_fill_rx_rate(), mt7615_mac_fill_rx(),
++mt7925_mac_fill_rx_rate(), and mt7996_mac_fill_rx_rate() translate
++the frame mode field of the RX vector into status->bw, but only handle
++the 20, 40, 80 and 160/320 MHz widths that standard bandwidth enums cover.
++Any other value falls into the default case and returns -EINVAL.
++
++That error is not benign. Calling functions pass it straight up to
++the RX queue processing which frees the skb without incrementing any
++counter, so a frame received at an unexpected bandwidth disappears with
++no trace in dmesg, in the netdev statistics or in debugfs.
++
++The frame mode field in the RX vector encodes half- and quarter-clocked
++OFDM bandwidths right after the wide bandwidth values in the same way the
++CBW field of the channel switch command does. Handle CMD_CBW_10MHZ and
++CMD_CBW_5MHZ across the mt76 driver family, and warn about anything still
++unrecognised instead of dropping it silently.
++
++Signed-off-by: Florian Maurer <fmaurer@disroot.org>
++---
++ mt7615/mac.c      |  9 +++++++++
++ mt76_connac_mac.c | 14 ++++++++++++++
++ mt7925/mac.c      |  9 +++++++++
++ mt7996/mac.c      |  9 +++++++++
++ 4 files changed, 41 insertions(+)
++
++diff --git a/mt7615/mac.c b/mt7615/mac.c
++index bd56cdb0..6127ec9d 100644
++--- a/mt7615/mac.c
+++++ b/mt7615/mac.c
++@@ -557,7 +557,16 @@ static int mt7615_mac_fill_rx(struct mt7615_dev *dev, struct sk_buff *skb)
++ 		case MT_PHY_BW_160:
++ 			status->bw = RATE_INFO_BW_160;
++ 			break;
+++		case CMD_CBW_10MHZ:
+++			status->bw = RATE_INFO_BW_10;
+++			break;
+++		case CMD_CBW_5MHZ:
+++			status->bw = RATE_INFO_BW_5;
+++			break;
++ 		default:
+++			dev_warn_ratelimited(dev->mt76.dev,
+++					     "rx: unhandled frame mode %u in rate decode\n",
+++					     (u8)FIELD_GET(MT_RXV1_FRAME_MODE, rxdg0));
++ 			return -EINVAL;
++ 		}
++ 
++diff --git a/mt76_connac_mac.c b/mt76_connac_mac.c
++index 3304b597..0451d129 100644
++--- a/mt76_connac_mac.c
+++++ b/mt76_connac_mac.c
++@@ -1119,7 +1119,21 @@ int mt76_connac2_mac_fill_rx_rate(struct mt76_dev *dev,
++ 	case IEEE80211_STA_RX_BW_160:
++ 		status->bw = RATE_INFO_BW_160;
++ 		break;
+++	/* The RXV frame mode field reuses the encoding of the CBW field of
+++	 * the channel switch command, which continues past the widths
+++	 * covered by enum ieee80211_sta_rx_bandwidth with the narrow,
+++	 * half- and quarter-clocked OFDM bandwidths.
+++	 */
+++	case CMD_CBW_10MHZ:
+++		status->bw = RATE_INFO_BW_10;
+++		break;
+++	case CMD_CBW_5MHZ:
+++		status->bw = RATE_INFO_BW_5;
+++		break;
++ 	default:
+++		dev_warn_ratelimited(dev->dev,
+++				     "rx: unhandled frame mode %u in rate decode\n",
+++				     bw);
++ 		return -EINVAL;
++ 	}
++ 
++diff --git a/mt7925/mac.c b/mt7925/mac.c
++index fa75fb58..b595866b 100644
++--- a/mt7925/mac.c
+++++ b/mt7925/mac.c
++@@ -339,7 +339,16 @@ mt7925_mac_fill_rx_rate(struct mt792x_dev *dev,
++ 	case IEEE80211_STA_RX_BW_160:
++ 		status->bw = RATE_INFO_BW_160;
++ 		break;
+++	case CMD_CBW_10MHZ:
+++		status->bw = RATE_INFO_BW_10;
+++		break;
+++	case CMD_CBW_5MHZ:
+++		status->bw = RATE_INFO_BW_5;
+++		break;
++ 	default:
+++		dev_warn_ratelimited(dev->mt76.dev,
+++				     "rx: unhandled frame mode %u in rate decode\n",
+++				     bw);
++ 		return -EINVAL;
++ 	}
++ 
++diff --git a/mt7996/mac.c b/mt7996/mac.c
++index 753c6987..ecb1fe6f 100644
++--- a/mt7996/mac.c
+++++ b/mt7996/mac.c
++@@ -408,7 +408,16 @@ mt7996_mac_fill_rx_rate(struct mt7996_dev *dev,
++ 	case IEEE80211_STA_RX_BW_320 + 1:
++ 		status->bw = RATE_INFO_BW_320;
++ 		break;
+++	case CMD_CBW_10MHZ:
+++		status->bw = RATE_INFO_BW_10;
+++		break;
+++	case CMD_CBW_5MHZ:
+++		status->bw = RATE_INFO_BW_5;
+++		break;
++ 	default:
+++		dev_warn_ratelimited(dev->mt76.dev,
+++				     "rx: unhandled frame mode %u in rate decode\n",
+++				     bw);
++ 		return -EINVAL;
++ 	}
++ 
++-- 
++2.47.3
