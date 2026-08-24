@@ -1,0 +1,77 @@
+Gluon 2026.1
+============
+
+Major updates and notices
+-------------------------
+
+Gluon's packet filtering has been migrated from *ebtables* and *iptables* to
+*nftables*. Firewall rules are managed by OpenWrt's *fw4* now; neither
+*ebtables* nor *iptables* are installed on nodes anymore.
+
+As all packages providing firewall rules have been renamed in the course of this
+migration, site configurations referring to the old names need to be updated.
+
+Site changes
+------------
+
+Firewall package and feature renames
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The following packages have been renamed:
+
+- *gluon-ebtables-filter-multicast* → :doc:`../package/gluon-nftables-filter-multicast`
+- *gluon-ebtables-filter-ra-dhcp* → :doc:`../package/gluon-nftables-filter-ra-dhcp`
+- *gluon-ebtables-limit-arp* → :doc:`../package/gluon-nftables-limit-arp`
+- *gluon-ebtables-source-filter* → :doc:`../package/gluon-nftables-source-filter`
+- *gluon-iptables-clamp-mss-to-pmtu* → *gluon-nftables-clamp-mss-to-pmtu*
+
+The *gluon-ebtables* package has been split up: the multicast and IGMP/MLD
+rules it contained are provided by the new
+:doc:`../package/gluon-nftables-multicast` package, while the infrastructure to
+generate and install firewall rules now lives in the new *gluon-nftables*
+package. Both are pulled in as dependencies and don't need to be listed
+explicitly.
+
+As feature flags are derived from package names, the corresponding flags have
+been renamed as well. In ``image-customization.lua``, entries like
+
+.. code-block:: lua
+
+    features({
+      'ebtables-filter-multicast',
+      'ebtables-filter-ra-dhcp',
+      'ebtables-limit-arp',
+    })
+
+must be changed to
+
+.. code-block:: lua
+
+    features({
+      'nftables-filter-multicast',
+      'nftables-filter-ra-dhcp',
+      'nftables-limit-arp',
+    })
+
+The same applies to package lists, including deselections such as
+``-gluon-ebtables-limit-arp``, which becomes ``-gluon-nftables-limit-arp``.
+
+Internal changes
+----------------
+
+- The firewall rules of all packages have been ported to *nftables* (`#2783`_)
+
+  Rule files are shipped as Lua files in ``/lib/gluon/nftables`` instead of
+  ``/lib/gluon/ebtables``. Instead of being applied by an init script, they are
+  evaluated by the ``300-nftables`` upgrade script, which generates ``.nft``
+  files and registers them as ``include`` sections of the ``firewall`` UCI
+  config, so that they are applied by *fw4*. Layer 2 filtering that used to be
+  implemented in *ebtables* is now part of a ``bridge`` table named ``gluon``.
+
+  See :doc:`../dev/packages` for details on how packages define firewall rules.
+
+- The *firewall4* package replaces *firewall* (fw3), and the *iptables* and
+  *ebtables* userspace tools and kernel modules have been removed from the
+  images.
+
+.. _#2783: https://github.com/freifunk-gluon/gluon/pull/2783
