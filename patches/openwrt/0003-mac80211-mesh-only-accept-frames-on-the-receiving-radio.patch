@@ -1,0 +1,106 @@
+From: Florian Maurer <fmaurer@disroot.org>
+Date: Thu, 22 Oct 2026 02:30:00 +0200
+Subject: mac80211: mesh: only accept frames on the receiving radio
+
+On a wiphy with multiple radios (e.g. MT7996), mac80211 passes received
+frames to the interfaces of all radios. The mesh interface of each band
+then creates stations for the neighbours of the other bands and tries
+to peer with them, so these show up as neighbours on every mesh
+interface.
+
+Only pass frames to a mesh interface, and to the stations on it, if they
+were received on the radio of its channel context.
+
+Assisted-by: LLM
+
+diff --git a/package/kernel/mac80211/patches/subsys/997-wifi-mac80211-mesh-only-accept-frames-on-the-receiving-radio.patch b/package/kernel/mac80211/patches/subsys/997-wifi-mac80211-mesh-only-accept-frames-on-the-receiving-radio.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..b397ed1236e7a0af538e97bdba07f54325ef7036
+--- /dev/null
++++ b/package/kernel/mac80211/patches/subsys/997-wifi-mac80211-mesh-only-accept-frames-on-the-receiving-radio.patch
+@@ -0,0 +1,85 @@
++From: Florian Maurer <fmaurer@disroot.org>
++Date: Thu, 22 Oct 2026 02:30:00 +0200
++Subject: [PATCH] wifi: mac80211: mesh: only accept frames on the receiving radio
++
++On a wiphy with multiple radios, __ieee80211_rx_handle_packet() passes a
++frame to all interfaces and to all stations with a matching address,
++regardless of the radio it was received on. With a mesh interface on
++each radio, the beacons and peering frames of a neighbour on one band
++are processed by the mesh interfaces of all bands. Each of them creates
++a station for the neighbour and keeps trying to peer with it on a band
++the neighbour is not using.
++
++Only pass frames to a mesh interface, and to the stations on it, if they
++were received on the radio of its channel context. Without a channel
++context, a mesh interface is not joined yet; frames queued in this state
++would otherwise create stations once it has joined.
++
++Other interface types are not filtered, as they might receive frames
++off-channel, e.g. for remain-on-channel.
++---
++diff --git a/net/mac80211/rx.c b/net/mac80211/rx.c
++index b728246..fed51b5 100644
++--- a/net/mac80211/rx.c
+++++ b/net/mac80211/rx.c
++@@ -5307,6 +5307,32 @@ drop:
++ 	dev_kfree_skb(skb);
++ }
++ 
+++/*
+++ * On a wiphy with multiple radios, all interfaces share the frames received
+++ * by any of the radios. A mesh interface creates stations from the beacons
+++ * it receives and tries to peer with them, so only pass it the frames
+++ * received on the radio of its channel context. Other interface types are
+++ * not filtered, as they might receive frames off-channel, e.g. for
+++ * remain-on-channel.
+++ */
+++static bool ieee80211_rx_radio_valid(struct ieee80211_sub_if_data *sdata,
+++				     struct ieee80211_rx_status *status)
+++{
+++	struct wiphy *wiphy = sdata->local->hw.wiphy;
+++	struct ieee80211_chanctx_conf *conf;
+++
+++	if (wiphy->n_radio < 2 || !status->freq ||
+++	    sdata->vif.type != NL80211_IFTYPE_MESH_POINT)
+++		return true;
+++
+++	conf = rcu_dereference(sdata->vif.bss_conf.chanctx_conf);
+++	if (!conf || conf->radio_idx < 0 || conf->radio_idx >= wiphy->n_radio)
+++		return false;
+++
+++	return ieee80211_radio_freq_range_valid(&wiphy->radio[conf->radio_idx],
+++						MHZ_TO_KHZ(status->freq), 20000);
+++}
+++
++ static bool ieee80211_rx_for_interface(struct ieee80211_rx_data *rx,
++ 				       struct sk_buff *skb, bool consume)
++ {
++@@ -5414,6 +5440,7 @@ static void __ieee80211_rx_handle_packet(struct ieee80211_hw *hw,
++ 					 struct list_head *list)
++ {
++ 	struct ieee80211_local *local = hw_to_local(hw);
+++	struct ieee80211_rx_status *status = IEEE80211_SKB_RXCB(skb);
++ 	struct ieee80211_sub_if_data *sdata;
++ 	struct ieee80211_hdr *hdr;
++ 	__le16 fc;
++@@ -5481,6 +5508,9 @@ static void __ieee80211_rx_handle_packet(struct ieee80211_hw *hw,
++ 		prev_sta = NULL;
++ 
++ 		for_each_sta_info(local, hdr->addr2, sta, tmp) {
+++			if (!ieee80211_rx_radio_valid(sta->sdata, status))
+++				continue;
+++
++ 			if (!prev_sta) {
++ 				prev_sta = sta;
++ 				continue;
++@@ -5529,6 +5559,9 @@ static void __ieee80211_rx_handle_packet(struct ieee80211_hw *hw,
++ 		    sdata->vif.type == NL80211_IFTYPE_AP_VLAN)
++ 			continue;
++ 
+++		if (!ieee80211_rx_radio_valid(sdata, status))
+++			continue;
+++
++ 		/*
++ 		 * frame is destined for this interface, but if it's
++ 		 * not also for the previous one we handle that after
