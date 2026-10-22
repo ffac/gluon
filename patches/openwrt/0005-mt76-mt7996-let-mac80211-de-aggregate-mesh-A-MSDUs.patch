@@ -1,0 +1,103 @@
+From: Florian Maurer <fmaurer@disroot.org>
+Date: Thu, 22 Oct 2026 08:00:00 +0200
+Subject: mt76: mt7996: let mac80211 de-aggregate mesh A-MSDUs
+
+The hardware A-MSDU de-aggregation of mt7996 cannot parse the mesh
+A-MSDUs of ath11k, which counts the Mesh Control as part of the
+subframe length. Every subframe but the first one is dropped, which
+limited TCP downloads over an ath11k neighbour to below 1 Mbit/s.
+
+Backport the pending openwrt/mt76 pull request 1170, which leaves the
+de-aggregation to mac80211 while a mesh interface exists.
+
+Link: https://github.com/openwrt/mt76/pull/1170
+Assisted-by: LLM
+
+diff --git a/package/kernel/mt76/patches/101-wifi-mt76-mt7996-let-mac80211-de-aggregate-mesh-A-MSDUs.patch b/package/kernel/mt76/patches/101-wifi-mt76-mt7996-let-mac80211-de-aggregate-mesh-A-MSDUs.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..52efa42ac85caaf7eb61c9ddbc42b737d3351b4f
+--- /dev/null
++++ b/package/kernel/mt76/patches/101-wifi-mt76-mt7996-let-mac80211-de-aggregate-mesh-A-MSDUs.patch
+@@ -0,0 +1,82 @@
++From: Florian Maurer <fmaurer@disroot.org>
++Date: Thu, 22 Oct 2026 04:00:46 +0000
++Subject: [PATCH] wifi: mt76: mt7996: let mac80211 de-aggregate mesh A-MSDUs
++
++802.11-2020 excludes the Mesh Control from the length of a mesh A-MSDU
++subframe, while ath11k (seen with the firmware of a Xiaomi AX3600)
++counts it as part of the MSDU. mac80211 detects the format used by each
++peer, but the hardware de-aggregation of mt7996 always assumes the
++standard one. For an A-MSDU of an ath11k peer it looks for the second
++subframe a few bytes behind its real start and reports an A-MSDU
++error, so every subframe but the first one is dropped.
++
++The resulting loss of about 1.5% of the frames limits a TCP download
++over an ath11k mesh neighbour to well below 1 Mbit/s on a link that
++carries more than 100 Mbit/s.
++
++Disable the hardware de-aggregation while a mesh interface exists and
++leave it to mac80211.
++
++Fixes: 98686cd21624 ("wifi: mt76: mt7996: add driver for MediaTek Wi-Fi 7 (802.11be) devices")
++---
++ mt7996/main.c | 13 +++++++++++++
++ mt7996/regs.h |  1 +
++ 2 files changed, 14 insertions(+)
++
++diff --git a/mt7996/main.c b/mt7996/main.c
++index 741cb6b4..c0169b10 100644
++--- a/mt7996/main.c
+++++ b/mt7996/main.c
++@@ -583,6 +583,13 @@ static int mt7996_add_interface(struct ieee80211_hw *hw,
++ 			mt7996_set_monitor(phy, true);
++ 	}
++ 
+++	/* The hardware A-MSDU de-aggregation expects the Mesh Control to be
+++	 * excluded from the subframe length, which e.g. ath11k includes.
+++	 * Leave the de-aggregation to mac80211, which handles both formats.
+++	 */
+++	if (vif->type == NL80211_IFTYPE_MESH_POINT)
+++		mt76_clear(dev, MT_MDP_DCR0, MT_MDP_DCR0_DAMSDU_EN);
+++
++ 	mt76_vif_init(vif, &mvif->mt76);
++ 
++ 	vif->offload_flags |= IEEE80211_OFFLOAD_ENCAP_4ADDR;
++@@ -597,6 +604,7 @@ out:
++ struct mt7996_radio_data {
++ 	u32 active_mask;
++ 	u32 monitor_mask;
+++	bool mesh;
++ };
++ 
++ static void mt7996_remove_iter(void *data, u8 *mac, struct ieee80211_vif *vif)
++@@ -607,6 +615,8 @@ static void mt7996_remove_iter(void *data, u8 *mac, struct ieee80211_vif *vif)
++ 	rdata->active_mask |= wdev->radio_mask;
++ 	if (vif->type == NL80211_IFTYPE_MONITOR)
++ 		rdata->monitor_mask |= wdev->radio_mask;
+++	if (vif->type == NL80211_IFTYPE_MESH_POINT)
+++		rdata->mesh = true;
++ }
++ 
++ static void mt7996_remove_interface(struct ieee80211_hw *hw,
++@@ -653,6 +663,9 @@ static void mt7996_remove_interface(struct ieee80211_hw *hw,
++ 		if (!(rdata.active_mask & BIT(i)))
++ 			mt7996_stop_phy(phy);
++ 	}
+++
+++	if (vif->type == NL80211_IFTYPE_MESH_POINT && !rdata.mesh)
+++		mt76_set(dev, MT_MDP_DCR0, MT_MDP_DCR0_DAMSDU_EN);
++ }
++ 
++ int mt7996_set_channel(struct mt76_phy *mphy)
++diff --git a/mt7996/regs.h b/mt7996/regs.h
++index 6df6e4c3..b18321c6 100644
++--- a/mt7996/regs.h
+++++ b/mt7996/regs.h
++@@ -196,6 +196,7 @@ enum offs_rev {
++ #define MT_MDP(ofs)				(MT_MDP_BASE + (ofs))
++ 
++ #define MT_MDP_DCR0				MT_MDP(0x800)
+++#define MT_MDP_DCR0_DAMSDU_EN			BIT(15)
++ #define MT_MDP_DCR0_RX_HDR_TRANS_EN		BIT(19)
++ 
++ #define MT_MDP_DCR2				MT_MDP(0x8e8)
