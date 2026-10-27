@@ -1,0 +1,89 @@
+From: Florian Maurer <fmaurer@disroot.org>
+Date: Tue, 27 Oct 2026 09:35:53 +0000
+Subject: mt76: mt7996: use the own address as BSSID of mesh interfaces
+
+The firmware of mt7996 sets A3 of transmitted management frames to the
+BSSID, which mac80211 leaves zero for mesh interfaces. ath11k drops mesh
+peering frames with a zero A3, so mt7996 and ath11k nodes could not
+establish a mesh link.
+
+Backport the pending openwrt/mt76 pull request 1132, which uses the own
+address as BSSID of mesh interfaces.
+
+Link: https://github.com/openwrt/mt76/pull/1132
+Assisted-by: LLM
+
+diff --git a/package/kernel/mt76/patches/100-wifi-mt76-mt7996-use-own-MAC-as-BSS-BSSID-for-mesh-interfaces.patch b/package/kernel/mt76/patches/100-wifi-mt76-mt7996-use-own-MAC-as-BSS-BSSID-for-mesh-interfaces.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..cb2ab968aba11ada00f1508eae2c05aca84acd2e
+--- /dev/null
++++ b/package/kernel/mt76/patches/100-wifi-mt76-mt7996-use-own-MAC-as-BSS-BSSID-for-mesh-interfaces.patch
+@@ -0,0 +1,68 @@
++From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
++From: outbackdingo <outbackdingo@gmail.com>
++Date: Fri, 11 Sep 2026 13:50:25 +0700
++Subject: [PATCH] wifi: mt76: mt7996: use own MAC as BSS BSSID for mesh
++ interfaces
++
++mac80211 deliberately leaves bss_conf.bssid as zero_addr for mesh
++interfaces, because an MBSS has no BSSID in the infrastructure sense:
++
++  net/mac80211/mesh.c:  sdata->vif.bss_conf.bssid = zero_addr;
++
++mt7996_mcu_bss_basic_tlv() copies that value into the hardware BSS entry,
++and the hardware stamps the programmed BSS BSSID into Address 3 of the
++management frames it transmits. Every Mesh Peering Management frame
++(Self-Protected Action, category 15) therefore leaves the radio with
++addr3 = 00:00:00:00:00:00.
++
++That value is wrong for the wire. mac80211's own kernel MPM puts the
++transmitter's MAC in addr3 (net/mac80211/mesh_plink.c: memcpy(mgmt->bssid,
++sdata->vif.addr, ETH_ALEN)), and hostapd does the same for user-space MPM.
++bss_conf.bssid == zero is a "no associated BSS" marker, not a value to
++transmit.
++
++This breaks 802.11s interoperability with peers that filter received
++management frames on BSSID. Measured against an ath11k (QCN9074) peer over
++a 35 s window: 217 Mesh Peering Open and 194 Peering Confirm frames were
++transmitted and ACKed at the MAC layer, and none were delivered to the
++peer's host, while 108 of 400 SAE Authentication frames from the same
++radio -- which carry a correct addr3 -- were delivered normally. SAE
++therefore completes and MPM never does; the peer closes with reason 56
++(MESH_MAX_RETRIES) reporting our link ID as 0.
++
++Instrumenting mt7996_tx() confirms the header is correct on entry to the
++driver and zeroed on air (same 25 s window: 1035 frames with
++addr3 = own MAC at mt7996_tx(), 915 frames with addr3 = 0 on air,
++captured by an independent monitor-mode station). mld=0 on every sample,
++so the MLD address rewrite in mt7996_tx() is not involved.
++
++With this change addr3 is correct on air and a BPI-R4 joins a three-node
++ath11k 802.11s/batman-adv mesh: all four nodes reach plink ESTAB and
++exchange batman-adv originators.
++
++Signed-off-by: outbackdingo <outbackdingo@gmail.com>
++---
++ mt7996/mcu.c | 10 +++++++++-
++ 1 file changed, 9 insertions(+), 1 deletion(-)
++
++diff --git a/mt7996/mcu.c b/mt7996/mcu.c
++index a4e36ab6..8318d6de 100644
++--- a/mt7996/mcu.c
+++++ b/mt7996/mcu.c
++@@ -1304,7 +1304,15 @@ mt7996_mcu_bss_basic_tlv(struct sk_buff *skb,
++ 		return 0;
++ 	}
++ 
++-	memcpy(bss->bssid, link_conf->bssid, ETH_ALEN);
+++	/* mac80211 sets bss_conf.bssid = zero_addr for mesh interfaces, and the
+++	 * HW stamps the programmed BSS BSSID into addr3 of TXed mgmt frames.
+++	 * That would send mesh peering frames with addr3 = 00:00:00:00:00:00,
+++	 * which peers filtering on BSSID (e.g. ath11k) silently drop.
+++	 */
+++	if (vif->type == NL80211_IFTYPE_MESH_POINT)
+++		memcpy(bss->bssid, link_conf->addr, ETH_ALEN);
+++	else
+++		memcpy(bss->bssid, link_conf->bssid, ETH_ALEN);
++ 	bss->bcn_interval = cpu_to_le16(link_conf->beacon_int);
++ 	bss->dtim_period = link_conf->dtim_period;
++ 	bss->phymode = mt76_connac_get_phy_mode(phy, vif,
