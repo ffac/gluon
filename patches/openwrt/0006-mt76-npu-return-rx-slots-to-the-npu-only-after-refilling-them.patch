@@ -1,0 +1,170 @@
+From: Florian Maurer <fmaurer@disroot.org>
+Date: Wed, 28 Oct 2026 06:22:17 +0000
+Subject: mt76: npu: return rx slots to the NPU only after refilling them
+
+With the offload to the Airoha NPU, the Gemtek W1700K crashes in the
+rx path of mt76 after a few minutes of mesh traffic, and some received
+frames are parsed with wrong boundaries, which shows up as tx-free
+warnings of mt7996.
+
+Backport the pending openwrt/mt76 pull request 1169, which hands the
+consumed rx slots back to the NPU only after refilling them and reads
+the slot count of a frame only after its first slot is complete.
+
+Link: https://github.com/openwrt/mt76/pull/1169
+Assisted-by: LLM
+
+diff --git a/package/kernel/mt76/patches/102-wifi-mt76-npu-return-rx-slots-to-the-npu-only-after-refilling-them.patch b/package/kernel/mt76/patches/102-wifi-mt76-npu-return-rx-slots-to-the-npu-only-after-refilling-them.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..e6f0c9872f9e665cabd3b296981c350ba6465068
+--- /dev/null
++++ b/package/kernel/mt76/patches/102-wifi-mt76-npu-return-rx-slots-to-the-npu-only-after-refilling-them.patch
+@@ -0,0 +1,90 @@
++From: Florian Maurer <fmaurer@disroot.org>
++Date: Wed, 28 Oct 2026 07:30:34 +0000
++Subject: [PATCH] wifi: mt76: npu: return rx slots to the NPU only after
++ refilling them
++
++mt76_npu_dequeue() writes the new tail to the dma_idx register of the
++NPU rx ring as soon as it has consumed a frame, while the slots are
++only refilled with new buffers by mt76_npu_rx_poll() after the whole
++NAPI budget. Until then, the descriptors of the released slots still
++point to the buffers that were passed up the stack, and on the first
++round of the ring the slot that was never filled points to address 0.
++If the NPU completes one of these slots, the host processes an entry
++without buffer, which crashes in dma_sync_single_for_cpu() under heavy
++rx load:
++
++  Unable to handle kernel paging request at virtual address ffffffff80000700
++  pc : dcache_inval_poc+0x28/0x58
++  lr : arch_sync_dma_for_cpu+0x28/0x38
++  Call trace:
++   dcache_inval_poc+0x28/0x58 (P)
++   __dma_sync_single_for_cpu+0xe4/0xf8
++   mt76_npu_rx_poll+0x184/0x390 [mt76]
++   __napi_poll+0x34/0x180
++
++Write dma_idx after refilling the ring instead, up to the slot kept
++free in front of the tail, which is the same value as before once the
++ring is full.
++
++Also check that all slots of a frame are queued and complete before
++building the skb. So far a frame whose later slots were not yet
++done was freed together with the buffers of its first slots, which
++were then used again on the next poll.
++
++Fixes: 7fb554b1b623 ("wifi: mt76: Introduce the NPU generic layer")
++---
++ npu.c | 21 +++++++++++++++------
++ 1 file changed, 15 insertions(+), 6 deletions(-)
++
++diff --git a/npu.c b/npu.c
++index dd954df9..093c2bdc 100644
++--- a/npu.c
+++++ b/npu.c
++@@ -40,6 +40,11 @@ int mt76_npu_fill_rx_queue(struct mt76_dev *dev, struct mt76_queue *q)
++ 		nframes++;
++ 	}
++ 
+++	/* Hand the slots back to the NPU only once they have a new buffer,
+++	 * up to the one kept free in front of the tail.
+++	 */
+++	Q_WRITE(q, dma_idx, (q->head + 1) % q->ndesc);
+++
++ 	return nframes;
++ }
++ 
++@@ -69,17 +74,22 @@ static struct sk_buff *mt76_npu_dequeue(struct mt76_dev *dev,
++ 
++ 	nframes = FIELD_GET(NPU_RX_DMA_PKT_COUNT_MASK, desc[index].info);
++ 	nframes = max_t(int, nframes, 1);
+++	if (nframes > q->queued)
+++		return NULL;
+++
+++	/* Only take the frame once all of its slots are complete */
+++	for (i = 0; i < nframes; i++) {
+++		int idx = (index + i) % q->ndesc;
+++
+++		if (!FIELD_GET(NPU_RX_DMA_DESC_DONE_MASK, desc[idx].ctrl))
+++			return NULL;
+++	}
++ 
++ 	for (i = 0; i < nframes; i++) {
++ 		struct mt76_queue_entry *e = &q->entry[index];
++ 		int len = FIELD_GET(NPU_RX_DMA_DESC_CUR_LEN_MASK,
++ 				    desc[index].ctrl);
++ 
++-		if (!FIELD_GET(NPU_RX_DMA_DESC_DONE_MASK, desc[index].ctrl)) {
++-			dev_kfree_skb(skb);
++-			return NULL;
++-		}
++-
++ 		dma_sync_single_for_cpu(dev->dma_dev, e->dma_addr[0],
++ 					e->dma_len[0],
++ 					page_pool_get_dma_dir(q->page_pool));
++@@ -108,7 +118,6 @@ static struct sk_buff *mt76_npu_dequeue(struct mt76_dev *dev,
++ 	}
++ 	q->tail = index;
++ 	q->queued -= i;
++-	Q_WRITE(q, dma_idx, q->tail);
++ 
++ 	return skb;
++ }
+diff --git a/package/kernel/mt76/patches/103-wifi-mt76-npu-read-the-rx-slot-count-after-the-first-slot-is-complete.patch b/package/kernel/mt76/patches/103-wifi-mt76-npu-read-the-rx-slot-count-after-the-first-slot-is-complete.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..d60adad6a5b61f58c6b377f655a55d54e1ba5757
+--- /dev/null
++++ b/package/kernel/mt76/patches/103-wifi-mt76-npu-read-the-rx-slot-count-after-the-first-slot-is-complete.patch
+@@ -0,0 +1,52 @@
++From: Florian Maurer <fmaurer@disroot.org>
++Date: Wed, 28 Oct 2026 07:30:34 +0000
++Subject: [PATCH] wifi: mt76: npu: read the rx slot count after the first slot
++ is complete
++
++mt76_npu_dequeue() reads the slot count of a frame from the info word
++of its first descriptor before checking the done bit of that slot. If
++the NPU completes the slot in between, the count is still the 0 left
++by the refill, so a frame spanning two slots is taken as a single slot
++frame and its second slot is parsed as the start of the next frame.
++With mt7996 this shows up as tx-free events with invalid tokens and the
++corresponding warnings in mt7996_mac_tx_free().
++
++Check the done bit of the first slot before reading the slot count,
++and order the descriptor reads with dma_rmb().
++
++Fixes: 7fb554b1b623 ("wifi: mt76: Introduce the NPU generic layer")
++---
++ npu.c | 9 ++++++++-
++ 1 file changed, 8 insertions(+), 1 deletion(-)
++
++diff --git a/npu.c b/npu.c
++index 093c2bdc..21d9db5a 100644
++--- a/npu.c
+++++ b/npu.c
++@@ -72,18 +72,25 @@ static struct sk_buff *mt76_npu_dequeue(struct mt76_dev *dev,
++ 	int i, nframes, index = q->tail;
++ 	struct sk_buff *skb = NULL;
++ 
+++	if (!q->queued ||
+++	    !FIELD_GET(NPU_RX_DMA_DESC_DONE_MASK, desc[index].ctrl))
+++		return NULL;
+++
+++	/* The slot count is only valid once the first slot is complete */
+++	dma_rmb();
++ 	nframes = FIELD_GET(NPU_RX_DMA_PKT_COUNT_MASK, desc[index].info);
++ 	nframes = max_t(int, nframes, 1);
++ 	if (nframes > q->queued)
++ 		return NULL;
++ 
++ 	/* Only take the frame once all of its slots are complete */
++-	for (i = 0; i < nframes; i++) {
+++	for (i = 1; i < nframes; i++) {
++ 		int idx = (index + i) % q->ndesc;
++ 
++ 		if (!FIELD_GET(NPU_RX_DMA_DESC_DONE_MASK, desc[idx].ctrl))
++ 			return NULL;
++ 	}
+++	dma_rmb();
++ 
++ 	for (i = 0; i < nframes; i++) {
++ 		struct mt76_queue_entry *e = &q->entry[index];
