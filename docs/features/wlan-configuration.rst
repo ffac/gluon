@@ -44,7 +44,9 @@ created on upgrade for all radios with a path:
   uci show wireless | grep '\.path='
 
 Set the channel of a radio, overriding the channel of the site configuration.
-If the channel is not supported by the radio, the default channel is used:
+If the channel is not supported by the radio, the default channel is used.
+In outdoor mode, the channel of a 5 GHz radio is picked from the outdoor channel
+list and a configured channel is ignored:
 
 .. code-block:: sh
 
