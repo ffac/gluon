@@ -45,27 +45,28 @@ local role_iface_names = {
 local function migrate_wifi_to_roles(band)
 	local band_roles = {}
 	local config_exists = false
+	local old_wireless = uci:get_all('wireless_gluon-old') and 'wireless_gluon-old' or 'wireless'
 	wireless.foreach_radio(uci, function(radio)
 		if radio.band ~= band then
 			return
 		end
 		for role, iface_prefix in pairs(role_iface_names) do
 			local iface_name = iface_prefix .. radio['.name']
-			if uci:get('wireless', iface_name) then
+			if uci:get(old_wireless, iface_name) then
 				config_exists = true
-				local role_enabled = not uci:get_bool('wireless', iface_name, 'disabled')
+				local role_enabled = not uci:get_bool(old_wireless, iface_name, 'disabled')
 				if role_enabled then
 					util.add_to_set(band_roles, role)
 					if role == 'private' then
-						local ssid = uci:get('wireless', iface_name, 'ssid')
-						local key = uci:get('wireless', iface_name, 'key')
-						local encryption = uci:get('wireless', iface_name, 'encryption')
+						local ssid = uci:get(old_wireless, iface_name, 'ssid')
+						local key = uci:get(old_wireless, iface_name, 'key')
+						local encryption = uci:get(old_wireless, iface_name, 'encryption')
 
 						-- migrate encryption from Gluon v2023.2.x or older
 						-- remove this in 2027 or on first release supporting only upgrades from >=v2025.1.x
 						encryption = encryption and encryption:gsub("psk3", "sae")
 
-						local mfp = uci:get('wireless', iface_name, 'ieee80211w')
+						local mfp = uci:get(old_wireless, iface_name, 'ieee80211w')
 						uci:set('gluon', 'wireless', 'private_ssid', ssid)
 						uci:set('gluon', 'wireless', 'private_key', key)
 						uci:set('gluon', 'wireless', 'private_encryption', encryption)

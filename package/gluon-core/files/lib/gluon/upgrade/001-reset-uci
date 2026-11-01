@@ -21,17 +21,20 @@ if [ -s "$SYSTEM_CFG" ] && ! [ -s "$SYSTEM_SAVED" ]; then
 	mv -f "$SYSTEM_CFG" "$SYSTEM_SAVED"
 fi
 if [ -s "$WIRELESS_CFG" ] && ! [ -s "$WIRELESS_SAVED" ]; then
-	# TODO wireless should be moved as well after migrating radio specific settings
-	cp "$WIRELESS_CFG" "$WIRELESS_SAVED"
+	mv -f "$WIRELESS_CFG" "$WIRELESS_SAVED"
 fi
 
 # Rename the interfaces while /etc/board.json still tells whether OpenWrt
 # names them, without waiting for the hotplug handler
 /lib/gluon/rename-netif
 
-# Generate a new network config
-rm -f /etc/board.json "$NETWORK_CFG" "$SYSTEM_CFG"
+# Generate a new network and wireless config
+rm -f /etc/board.json "$NETWORK_CFG" "$SYSTEM_CFG" "$WIRELESS_CFG"
 config_generate
+
+if command -v wifi >/dev/null; then
+	wifi config
+fi
 
 # Create the gluon config from its defaults on first boot, or if it was
 # removed, so the following upgrade scripts can store their settings in it
