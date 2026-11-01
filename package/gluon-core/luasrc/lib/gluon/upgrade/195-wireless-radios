@@ -32,7 +32,14 @@ local function get_old_radio(radio)
 		end
 	end
 
-	return uci:get_all('wireless_gluon-old', radio['.name']) or radio
+	-- Only fall back to the section of the same name if it can't belong to
+	-- a different radio
+	local old_radio = uci:get_all('wireless_gluon-old', radio['.name'])
+	if old_radio and not (radio.path and old_radio.path) then
+		return old_radio
+	end
+
+	return {}
 end
 
 wireless.foreach_radio(uci, function(radio, _, config)
