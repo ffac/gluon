@@ -22,15 +22,10 @@ on upgrades the existing setting is always retained (as this setting may have be
 by the user). This means that it is not possible to enable or disable an existing network
 configurations during upgrades.
 
-During upgrades the wifi channel of the 2.4GHz and 5GHz radio will be restored to the channel
-configured in the site.conf. The channel width will be reset to the one configured for the radio
-(see `Per-radio settings`_) or the site.conf. If you need to preserve
-these settings during upgrades you can configure this via the uci section ``gluon-core.wireless``::
+During upgrades the wifi channel and channel width of the radios will be restored
+to the channel and channel width configured for the radio (see `Per-radio settings`_)
+or the site.conf.
 
-  uci set gluon.wireless.preserve_channels='1'
-
-When channels should be preserved, toggling the outdoor mode will have no effect on the channel settings.
-Therefore, the Outdoor mode settings won't be displayed in config mode.
 Keep in mind that nodes running wifi interfaces on custom channels can't mesh with default nodes anymore!
 
 Per-radio settings
@@ -77,8 +72,7 @@ Set the transmission power of a radio in dBm, as listed by
 Delete an option to return to the default. To apply the configuration, run
 ``gluon-reconfigure && wifi reconf``. The transmission power in
 ``/etc/config/wireless`` is overwritten by this setting, so it must not be
-changed there. The channel width has no effect while channels are preserved
-(see `Upgrade behaviour`_).
+changed there.
 
 Role Adjustments
 ----------------

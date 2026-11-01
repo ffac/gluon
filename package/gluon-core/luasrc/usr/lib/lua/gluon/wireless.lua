@@ -96,10 +96,6 @@ function M.foreach_radio(uci, f)
 	end
 end
 
-function M.preserve_channels(uci)
-	return uci:get_bool('gluon', 'wireless', 'preserve_channels')
-end
-
 function M.device_supports_wpa3()
 	return unistd.access('/lib/gluon/features/wpa3')
 end

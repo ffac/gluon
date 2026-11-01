@@ -1,6 +1,7 @@
 #!/usr/bin/lua
 
 local site = require 'gluon.site'
+local util = require 'gluon.util'
 local wireless = require 'gluon.wireless'
 local uci = require('simple-uci').cursor()
 
@@ -15,12 +16,33 @@ for option, htmode in pairs(uci:get_all('gluon', 'wireless') or {}) do
 	end
 end
 
-wireless.foreach_radio(uci, function(radio)
+local preserve_channels = uci:get_bool('gluon', 'wireless', 'preserve_channels')
+
+local function get_old_radio(radio)
+	if radio.path then
+		local found
+		uci:foreach('wireless_gluon-old', 'wifi-device', function(s)
+			if s.path == radio.path and (radio.radio == nil or s.radio == tostring(radio.radio)) then
+				found = s
+				return false
+			end
+		end)
+		if found then
+			return found
+		end
+	end
+
+	return uci:get_all('wireless_gluon-old', radio['.name']) or radio
+end
+
+wireless.foreach_radio(uci, function(radio, _, config)
+	local old_radio = get_old_radio(radio)
+
 	if not wireless.has_radio_section(uci, radio) then
 		-- Create the settings of a new radio, migrating a transmission power
 		-- configured in the wireless config
 		wireless.add_radio_section(uci, radio, {
-			txpower = radio.txpower,
+			txpower = old_radio.txpower,
 		})
 	end
 
@@ -33,6 +55,20 @@ wireless.foreach_radio(uci, function(radio)
 			and channel_width ~= site.wifi5.channel_width(20) then
 		wireless.set_radio_option(uci, radio, 'channel_width', channel_width)
 	end
+
+	if preserve_channels then
+		local old_channel = tonumber(old_radio.channel)
+		if old_channel and wireless.supports_channel(radio, old_channel) and old_channel ~= config.channel() then
+			wireless.set_radio_option(uci, radio, 'channel', old_channel)
+		end
+
+		local old_width = old_radio.htmode and tonumber(old_radio.htmode:match('%d+'))
+		local default_width = config.channel_width and config.channel_width(20) or 20
+		if old_width and util.contains(wireless.channel_widths, old_width) and old_width ~= default_width then
+			wireless.set_radio_option(uci, radio, 'channel_width', old_width)
+		end
+	end
 end)
 
+uci:delete('gluon', 'wireless', 'preserve_channels')
 uci:save('gluon')

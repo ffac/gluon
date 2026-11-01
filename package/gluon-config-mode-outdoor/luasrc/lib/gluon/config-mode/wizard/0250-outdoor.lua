@@ -7,11 +7,6 @@ return function(form, uci)
 		return
 	end
 
-	if wireless.preserve_channels(uci) then
-		-- Don't show if channel should be preserved
-		return
-	end
-
 	local pkg_i18n = i18n 'gluon-config-mode-outdoor'
 
 	local section = form:section(Section, nil, pkg_i18n.translate(

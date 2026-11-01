@@ -136,9 +136,8 @@ uci:foreach('wireless', 'wifi-device', function(config)
 		end
 	end
 
-	-- The channel width is not applied when channels are preserved
 	local channel_widths = channel_width_list(phy, config.band)
-	if #channel_widths > 1 and not wireless.preserve_channels(uci) then
+	if #channel_widths > 1 then
 		local cw = p:option(ListValue, radio .. '_channel_width', translate("Channel width") .. ' (' .. radio .. ')')
 		cw.default = wireless.radio_option(uci, config, 'channel_width') or 'default'
 
@@ -158,7 +157,7 @@ uci:foreach('wireless', 'wifi-device', function(config)
 end)
 
 
-if wireless.device_uses_band(uci, '5g') and not wireless.preserve_channels(uci) then
+if wireless.device_uses_band(uci, '5g') then
 	local r = f:section(Section, translate("Outdoor Installation"), translate(
 		"Configuring the node for outdoor use tunes the 5 GHz radio to a frequency "
 		.. "and transmission power that conforms with the local regulatory requirements. "
