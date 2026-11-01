@@ -53,6 +53,11 @@ wireless.foreach_radio(uci, function(radio)
 end)
 
 local function get_channel(radio, config)
+	local radio_channel = tonumber(wireless.radio_option(uci, radio, 'channel'))
+	if radio_channel and wireless.supports_channel(radio, radio_channel) then
+		return radio_channel
+	end
+
 	if (radio.band == '5g' and wireless.is_outdoor(uci)) or not wireless.supports_channel(radio, config.channel()) then
 		-- actual channel will be picked and probed from chanlist
 		return 'auto'

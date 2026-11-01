@@ -36,7 +36,7 @@ Keep in mind that nodes running wifi interfaces on custom channels can't mesh wi
 Per-radio settings
 ------------------
 
-The transmission power and the channel width can be configured for each radio,
+The channel, the channel width and the transmission power can be configured for each radio,
 in config mode or using UCI on the node. These settings are stored in the
 ``wireless_radio`` sections of ``/etc/config/gluon``, which identify a radio by
 its path, as radio names may change. Radios of a PHY supporting multiple radios
@@ -47,6 +47,14 @@ created on upgrade for all radios with a path:
 
   uci show gluon | grep wireless_radio
   uci show wireless | grep '\.path='
+
+Set the channel of a radio, overriding the channel of the site configuration.
+If the channel is not supported by the radio, the default channel is used:
+
+.. code-block:: sh
+
+  uci set gluon.@wireless_radio[0].channel='1'
+  uci commit gluon
 
 Set the channel width of a radio in MHz (20, 40, 80 or 160), overriding the
 ``channel_width`` of the site configuration. Other values are ignored. If the
