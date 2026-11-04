@@ -1,0 +1,124 @@
+From: Florian Maurer <fmaurer@disroot.org>
+Date: Wed, 4 Nov 2026 23:48:05 +0000
+Subject: mac80211: update mesh peer capabilities with hardware rate control
+
+When a mesh peer rejoins with different HT/VHT/HE capabilities while
+its station entry is kept, mac80211 only updates the rate control state
+for software rate control. Drivers with hardware rate control are never
+told, so e.g. ath11k keeps using the rates of the first peering. Like
+IBSS does, report this to the driver as changed supported rates and, if
+it changed, NSS.
+
+Link: https://lore.kernel.org/linux-wireless/20261101130636.1867958-1-fmaurer@disroot.org/
+Assisted-by: LLM
+
+diff --git a/package/kernel/mac80211/patches/subsys/380-wifi-mac80211-mesh-notify-driver-of-peer-capability-changes.patch b/package/kernel/mac80211/patches/subsys/380-wifi-mac80211-mesh-notify-driver-of-peer-capability-changes.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..58b2728142afcc328958191fc2c10e2676b072bf
+--- /dev/null
++++ b/package/kernel/mac80211/patches/subsys/380-wifi-mac80211-mesh-notify-driver-of-peer-capability-changes.patch
+@@ -0,0 +1,104 @@
++From: Florian Maurer <fmaurer@disroot.org>
++Date: Wed, 28 Oct 2026 11:41:46 +0000
++Subject: [PATCH] wifi: mac80211: mesh: notify driver of peer capability
++ changes
++
++mesh_sta_info_init() updates the supported rates and HT/VHT/HE/EHT
++capabilities of a mesh peer whenever it (re)joins, e.g. after it left
++and joined again with a different channel width or HT mode while its
++station entry was kept. The changes are only propagated through
++rate_control_rate_update() if WLAN_STA_RATE_CONTROL is set.
++
++That flag is set by rate_control_rate_init() only when a software rate
++control algorithm is in use. With hardware rate control
++(IEEE80211_HW_HAS_RATE_CONTROL, e.g. ath10k, ath11k) it is never set,
++so every call ends up in rate_control_rate_init(), which returns early
++without software rate control, and the driver is never told about the
++new capabilities. The firmware then keeps using the rates from the
++initial peer setup, e.g. legacy rates when the peer was first seen
++without HT, until the station is removed.
++
++With hardware rate control, tell the driver about changes of a station
++that is already uploaded via drv_link_sta_rc_update(), the same way
++IBSS does in ieee80211_update_sta_info(): report them as
++IEEE80211_RC_SUPP_RATES_CHANGED, plus IEEE80211_RC_NSS_CHANGED if
++rx_nss changed, so that the driver sets up the rates of the peer
++again. Also detect changed VHT/HE/EHT capabilities and rx_nss, which
++were not reported at all so far. The callback must be atomic, so
++calling it under plink_lock is fine. A pure bandwidth change on a
++rejoin, e.g. HT20 -> HT40+, is then also reported to the driver, as
++IEEE80211_RC_BW_CHANGED | IEEE80211_RC_SUPP_RATES_CHANGED.
++
++Keep the existing behaviour for software rate control, apart from now
++also getting IEEE80211_RC_SUPP_RATES_CHANGED for VHT/HE/EHT changes and
++IEEE80211_RC_NSS_CHANGED for rx_nss changes.
++
++Signed-off-by: Florian Maurer <fmaurer@disroot.org>
++
++diff --git a/net/mac80211/mesh_plink.c b/net/mac80211/mesh_plink.c
++index cb45a5d..4993c43 100644
++--- a/net/mac80211/mesh_plink.c
+++++ b/net/mac80211/mesh_plink.c
++@@ -430,6 +430,10 @@ static void mesh_sta_info_init(struct ieee80211_sub_if_data *sdata,
++ 	struct ieee80211_supported_band *sband;
++ 	u32 rates, changed = 0;
++ 	enum ieee80211_sta_rx_bandwidth bw = sta->sta.deflink.bandwidth;
+++	struct ieee80211_sta_vht_cap vht_cap;
+++	struct ieee80211_sta_he_cap he_cap;
+++	struct ieee80211_sta_eht_cap eht_cap;
+++	u8 rx_nss;
++ 
++ 	sband = ieee80211_get_sband(sdata);
++ 	if (!sband)
++@@ -450,6 +454,11 @@ static void mesh_sta_info_init(struct ieee80211_sub_if_data *sdata,
++ 		changed |= IEEE80211_RC_SUPP_RATES_CHANGED;
++ 	sta->sta.deflink.supp_rates[sband->band] = rates;
++ 
+++	memcpy(&vht_cap, &sta->sta.deflink.vht_cap, sizeof(vht_cap));
+++	memcpy(&he_cap, &sta->sta.deflink.he_cap, sizeof(he_cap));
+++	memcpy(&eht_cap, &sta->sta.deflink.eht_cap, sizeof(eht_cap));
+++	rx_nss = sta->sta.deflink.rx_nss;
+++
++ 	if (ieee80211_ht_cap_ie_to_sta_ht_cap(sdata, sband,
++ 					      elems->ht_cap_elem,
++ 					      &sta->deflink))
++@@ -469,6 +478,14 @@ static void mesh_sta_info_init(struct ieee80211_sub_if_data *sdata,
++ 					    elems->eht_cap, elems->eht_cap_len,
++ 					    &sta->deflink);
++ 
+++	if (memcmp(&vht_cap, &sta->sta.deflink.vht_cap, sizeof(vht_cap)) ||
+++	    memcmp(&he_cap, &sta->sta.deflink.he_cap, sizeof(he_cap)) ||
+++	    memcmp(&eht_cap, &sta->sta.deflink.eht_cap, sizeof(eht_cap)))
+++		changed |= IEEE80211_RC_SUPP_RATES_CHANGED;
+++
+++	if (sta->sta.deflink.rx_nss != rx_nss)
+++		changed |= IEEE80211_RC_NSS_CHANGED;
+++
++ 	if (bw != sta->sta.deflink.bandwidth)
++ 		changed |= IEEE80211_RC_BW_CHANGED;
++ 
++@@ -481,11 +498,20 @@ static void mesh_sta_info_init(struct ieee80211_sub_if_data *sdata,
++ 		sta->sta.deflink.bandwidth = IEEE80211_STA_RX_BW_20;
++ 	}
++ 
++-	/* FIXME: this check is wrong without SW rate control */
++-	if (!test_sta_flag(sta, WLAN_STA_RATE_CONTROL))
++-		rate_control_rate_init(&sta->deflink);
++-	else
+++	if (test_sta_flag(sta, WLAN_STA_RATE_CONTROL)) {
++ 		rate_control_rate_update(local, sband, &sta->deflink, changed);
+++		goto out;
+++	}
+++
+++	/* WLAN_STA_RATE_CONTROL is never set with hardware rate control, so
+++	 * tell the driver about changed capabilities of an uploaded station,
+++	 * e.g. of a peer that rejoined. As in IBSS, report them as changed
+++	 * supported rates.
+++	 */
+++	rate_control_rate_init(&sta->deflink);
+++	if (changed && sta->uploaded)
+++		drv_link_sta_rc_update(local, sdata, &sta->sta.deflink,
+++				       changed | IEEE80211_RC_SUPP_RATES_CHANGED);
++ out:
++ 	spin_unlock_bh(&sta->mesh->plink_lock);
++ }
