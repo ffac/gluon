@@ -1,0 +1,627 @@
+From: Florian Maurer <fmaurer@disroot.org>
+Date: Wed, 4 Nov 2026 23:49:11 +0000
+Subject: mac80211: ath11k: fix firmware crash recovery on AHB
+
+Add the patches posted to linux-wireless for the remaining recovery
+problems on IPQ8074, which are not merged yet:
+
+- 455-459: "wifi: ath11k: firmware crash recovery fixes" v2 by Julius
+  Bairaktaris. A failed recovery no longer frees the radios or the srng
+  allocations, TX stays blocked until the rings are set up again, and
+  only the restart work sends WMI commands during a recovery.
+- 460, 461: "wifi: ath11k: more firmware crash recovery fixes for AHB".
+  The ext IRQs are not disabled twice after a failed recovery, and TX is
+  stopped from the remoteproc SSR notifier before WCSS is reset.
+
+"wifi: ath11k: depend on RPMSG instead of selecting it" of the second
+series is left out. It only avoids a recursive Kconfig dependency with
+461, and the select of RPMSG it replaces (32ec8488d75d) is not in
+backports-6.18.55.
+
+Not covered: a second firmware crash 10-20 ms after the firmware is up
+again can make the next recovery dereference the cleared srngs in
+ath11k_ce_cleanup_pipes().
+
+Link: https://lore.kernel.org/linux-wireless/20261018210153.1925962-1-julius@bairaktaris.de/
+Link: https://lore.kernel.org/linux-wireless/cover.1793531790.git.fmaurer@disroot.org/
+Assisted-by: LLM
+
+diff --git a/package/kernel/mac80211/patches/ath11k/455-wifi-ath11k-initialise-the-CE-descriptor-waitqueue-once-per-device.patch b/package/kernel/mac80211/patches/ath11k/455-wifi-ath11k-initialise-the-CE-descriptor-waitqueue-once-per-device.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..d3612e4e5a49121ead0cd636f29e4cc41fbaf817
+--- /dev/null
++++ b/package/kernel/mac80211/patches/ath11k/455-wifi-ath11k-initialise-the-CE-descriptor-waitqueue-once-per-device.patch
+@@ -0,0 +1,66 @@
++From: Julius Bairaktaris <julius@bairaktaris.de>
++Date: Sun, 18 Oct 2026 23:01:49 +0200
++Subject: [PATCH] wifi: ath11k: initialise the CE descriptor waitqueue once per device
++
++Firmware crash recovery reinitialises tx_ce_desc_wq in
++ath11k_connect_pdev_htc_service(), reached through ath11k_core_start()
++and ath11k_wmi_connect(), while a WMI command on a device without credit
++flow can still sleep on it in ath11k_wmi_cmd_send(). finish_wait() then
++unlinks the waiter from the reset list head:
++
++  list_del corruption. prev->next should be ffffffc084293648, but was
++  ffffff80075109a8. (prev=ffffff80075109a8)
++  WARNING: CPU: 2 PID: 1782 at lib/list_debug.c:62
++  __list_del_entry_valid_or_report+0x134/0x174
++  CPU: 2 UID: 101 PID: 1782 Comm: hostapd
++  Call trace:
++   __list_del_entry_valid_or_report+0x134/0x174 (P)
++   finish_wait+0x68/0xb8
++   ath11k_wmi_cmd_send+0x150/0x2f4 [ath11k]
++   ath11k_wmi_vdev_set_param_cmd+0x64/0xd8 [ath11k]
++   ath11k_mac_op_bss_info_changed+0xe8/0xf6c [ath11k]
++   drv_link_info_changed+0x128/0x180 [mac80211]
++   ieee80211_link_info_change_notify+0xe0/0x100 [mac80211]
++   ieee80211_change_bss+0x1bc/0x250 [mac80211]
++   nl80211_set_bss+0x1a0/0x328 [cfg80211]
++
++Initialise the queues once in ath11k_core_alloc().
++
++Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.9.0.1-02146-QCAHKSWPL_SILICONZ-1
++
++Fixes: f951380a6022 ("ath11k: Disabling credit flow for WMI path")
++Reviewed-by: Baochen Qiang <baochen.qiang@oss.qualcomm.com>
++Assisted-by: Claude:claude-opus-5-5
++Signed-off-by: Julius Bairaktaris <julius@bairaktaris.de>
++---
++--- a/drivers/net/wireless/ath/ath11k/core.c
+++++ b/drivers/net/wireless/ath/ath11k/core.c
++@@ -2713,6 +2713,7 @@ struct ath11k_base *ath11k_core_alloc(struct device *dev, size_t priv_size,
++ 				      enum ath11k_bus bus)
++ {
++ 	struct ath11k_base *ab;
+++	int i;
++ 
++ 	ab = kzalloc(sizeof(*ab) + priv_size, GFP_KERNEL);
++ 	if (!ab)
++@@ -2739,6 +2740,10 @@ struct ath11k_base *ath11k_core_alloc(struct device *dev, size_t priv_size,
++ 	INIT_LIST_HEAD(&ab->peers);
++ 	init_waitqueue_head(&ab->peer_mapping_wq);
++ 	init_waitqueue_head(&ab->wmi_ab.tx_credits_wq);
+++
+++	for (i = 0; i < ARRAY_SIZE(ab->wmi_ab.wmi); i++)
+++		init_waitqueue_head(&ab->wmi_ab.wmi[i].tx_ce_desc_wq);
+++
++ 	init_waitqueue_head(&ab->qmi.cold_boot_waitq);
++ 	INIT_WORK(&ab->restart_work, ath11k_core_restart);
++ 	INIT_WORK(&ab->update_11d_work, ath11k_update_11d);
++--- a/drivers/net/wireless/ath/ath11k/wmi.c
+++++ b/drivers/net/wireless/ath/ath11k/wmi.c
++@@ -8945,7 +8945,6 @@ static int ath11k_connect_pdev_htc_service(struct ath11k_base *ab,
++ 	ab->wmi_ab.wmi_endpoint_id[pdev_idx] = conn_resp.eid;
++ 	ab->wmi_ab.wmi[pdev_idx].eid = conn_resp.eid;
++ 	ab->wmi_ab.max_msg_len[pdev_idx] = conn_resp.max_msg_len;
++-	init_waitqueue_head(&ab->wmi_ab.wmi[pdev_idx].tx_ce_desc_wq);
++ 
++ 	return 0;
++ }
+diff --git a/package/kernel/mac80211/patches/ath11k/456-wifi-ath11k-keep-the-radios-when-a-firmware-recovery-fails.patch b/package/kernel/mac80211/patches/ath11k/456-wifi-ath11k-keep-the-radios-when-a-firmware-recovery-fails.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..9c59741b5d8ffcab07c8b7d3fcd8fc3f70e75132
+--- /dev/null
++++ b/package/kernel/mac80211/patches/ath11k/456-wifi-ath11k-keep-the-radios-when-a-firmware-recovery-fails.patch
+@@ -0,0 +1,64 @@
++From: Julius Bairaktaris <julius@bairaktaris.de>
++Date: Sun, 18 Oct 2026 23:01:50 +0200
++Subject: [PATCH] wifi: ath11k: keep the radios when a firmware recovery fails
++
++On a firmware crash recovery ath11k_mac_allocate() keeps the registered
++radios, but the error paths of ath11k_core_start() and
++ath11k_core_qmi_firmware_ready() still call ath11k_mac_destroy(). A
++failed recovery thus frees an ieee80211_hw that mac80211 still uses and
++leaves ab->pdevs[i].ar NULL. A frame bridged to the radio then follows
++the freed hw:
++
++  Unable to handle kernel paging request at virtual address
++  ffffff8316cfd480
++  pc : sta_info_hash_lookup+0x4c/0xe4 [mac80211]
++  Call trace:
++   sta_info_hash_lookup+0x4c/0xe4 [mac80211] (P)
++   sta_info_get_bss+0x1c/0x78 [mac80211]
++   ieee80211_lookup_ra_sta+0x124/0x14c [mac80211]
++   __ieee80211_subif_start_xmit+0xb8/0x3a0 [mac80211]
++   ieee80211_subif_start_xmit+0x50/0x750 [mac80211]
++   dev_hard_start_xmit+0x98/0x120
++
++and driver removal dereferences the NULL ar:
++
++  Unable to handle kernel access to user memory outside uaccess routines
++  at virtual address 0000000000000000
++  pc : ath11k_dp_rx_pdev_free+0x34/0x12c [ath11k]
++  Call trace:
++   ath11k_dp_rx_pdev_free+0x34/0x12c [ath11k] (P)
++   ath11k_dp_pdev_free+0x4c/0x84 [ath11k]
++   ath11k_core_deinit+0xdc/0x168 [ath11k]
++   ath11k_ahb_remove+0x30/0x90 [ath11k_ahb]
++
++Destroy the radios only when ATH11K_FLAG_REGISTERED is clear, as
++ath11k_mac_allocate() does.
++
++Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.9.0.1-02146-QCAHKSWPL_SILICONZ-1
++
++Fixes: 0366f42640a4 ("ath11k: Move mac80211 hw allocation before wmi_init command")
++Assisted-by: Claude:claude-opus-5-5
++Signed-off-by: Julius Bairaktaris <julius@bairaktaris.de>
++---
++--- a/drivers/net/wireless/ath/ath11k/core.c
+++++ b/drivers/net/wireless/ath/ath11k/core.c
++@@ -2201,7 +2201,8 @@ static int ath11k_core_start(struct ath11k_base *ab)
++ err_reo_cleanup:
++ 	ath11k_dp_pdev_reo_cleanup(ab);
++ err_mac_destroy:
++-	ath11k_mac_destroy(ab);
+++	if (!test_bit(ATH11K_FLAG_REGISTERED, &ab->dev_flags))
+++		ath11k_mac_destroy(ab);
++ err_hif_stop:
++ 	ath11k_hif_stop(ab);
++ err_wmi_detach:
++@@ -2285,7 +2286,8 @@ int ath11k_core_qmi_firmware_ready(struct ath11k_base *ab)
++ 
++ err_core_stop:
++ 	ath11k_core_stop(ab);
++-	ath11k_mac_destroy(ab);
+++	if (!test_bit(ATH11K_FLAG_REGISTERED, &ab->dev_flags))
+++		ath11k_mac_destroy(ab);
++ err_dp_free:
++ 	ath11k_dp_free(ab);
++ 	mutex_unlock(&ab->core_lock);
+diff --git a/package/kernel/mac80211/patches/ath11k/457-wifi-ath11k-keep-the-srng-allocations-when-a-firmware-recovery-fails.patch b/package/kernel/mac80211/patches/ath11k/457-wifi-ath11k-keep-the-srng-allocations-when-a-firmware-recovery-fails.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..cca8b1eb42641fa08b288e26f618c6e5c7c0e281
+--- /dev/null
++++ b/package/kernel/mac80211/patches/ath11k/457-wifi-ath11k-keep-the-srng-allocations-when-a-firmware-recovery-fails.patch
+@@ -0,0 +1,52 @@
++From: Julius Bairaktaris <julius@bairaktaris.de>
++Date: Sun, 18 Oct 2026 23:01:51 +0200
++Subject: [PATCH] wifi: ath11k: keep the srng allocations when a firmware recovery fails
++
++Since commit 32be3ca4cf78 ("wifi: ath11k: HAL SRNG: don't deinitialize
++and re-initialize again") recovery zeroes the hal state instead of
++freeing and reallocating it, but a failed recovery still calls
++ath11k_hal_srng_deinit(). This frees the ring pointer buffers and the
++ring configuration, which only probe allocates, while the rings still
++point into them. Driver removal then walks the copy engine rings through
++the freed buffers:
++
++  ath11k c000000.wifi: failed to reconfigure driver on crash recovery
++  ...
++  Unable to handle kernel paging request at virtual address
++  ffffffc080ee5090
++  pc : ath11k_hal_srng_access_begin+0xc/0x60 [ath11k]
++  Call trace:
++   ath11k_hal_srng_access_begin+0xc/0x60 [ath11k] (P)
++   ath11k_ce_cleanup_pipes+0x16c/0x4cc [ath11k]
++   ath11k_ahb_stop+0x2c/0x3c [ath11k_ahb]
++   ath11k_core_deinit+0xec/0x168 [ath11k]
++   ath11k_ahb_remove+0x30/0x90 [ath11k_ahb]
++
++Return the error and keep the allocations for ath11k_ahb_remove() and
++ath11k_pci_remove() to free.
++
++Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.9.0.1-02146-QCAHKSWPL_SILICONZ-1
++
++Fixes: 32be3ca4cf78 ("wifi: ath11k: HAL SRNG: don't deinitialize and re-initialize again")
++Assisted-by: Claude:claude-opus-5-5
++Signed-off-by: Julius Bairaktaris <julius@bairaktaris.de>
++---
++--- a/drivers/net/wireless/ath/ath11k/core.c
+++++ b/drivers/net/wireless/ath/ath11k/core.c
++@@ -2321,15 +2321,11 @@ static int ath11k_core_reconfigure_on_crash(struct ath11k_base *ab)
++ 
++ 	ret = ath11k_core_qmi_firmware_ready(ab);
++ 	if (ret)
++-		goto err_hal_srng_deinit;
+++		return ret;
++ 
++ 	clear_bit(ATH11K_FLAG_RECOVERY, &ab->dev_flags);
++ 
++ 	return 0;
++-
++-err_hal_srng_deinit:
++-	ath11k_hal_srng_deinit(ab);
++-	return ret;
++ }
++ 
++ void ath11k_core_halt(struct ath11k *ar)
+diff --git a/package/kernel/mac80211/patches/ath11k/458-wifi-ath11k-clear-CRASH_FLUSH-only-after-recovery-rebuilds-the-rings.patch b/package/kernel/mac80211/patches/ath11k/458-wifi-ath11k-clear-CRASH_FLUSH-only-after-recovery-rebuilds-the-rings.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..5f67bb629a09397f25edce2d70f59f18b0953f19
+--- /dev/null
++++ b/package/kernel/mac80211/patches/ath11k/458-wifi-ath11k-clear-CRASH_FLUSH-only-after-recovery-rebuilds-the-rings.patch
+@@ -0,0 +1,50 @@
++From: Julius Bairaktaris <julius@bairaktaris.de>
++Date: Sun, 18 Oct 2026 23:01:52 +0200
++Subject: [PATCH] wifi: ath11k: clear CRASH_FLUSH only after recovery rebuilds the rings
++
++ath11k_core_reconfigure_on_crash() clears ATH11K_FLAG_CRASH_FLUSH right
++after ath11k_hal_srng_clear() zeroes the rings, but
++ath11k_ce_init_pipes() and ath11k_dp_alloc() rebuild them only later. A
++WMI command sent in between passes the CRASH_FLUSH check in
++ath11k_ce_send() and dereferences the NULL tail pointer of the cleared
++ring:
++
++  Unable to handle kernel read from unreadable memory at virtual address 0
++  pc : ath11k_hal_srng_access_begin+0xc/0x60 [ath11k]
++  lr : ath11k_ce_send+0x114/0x350 [ath11k]
++  Call trace:
++   ath11k_hal_srng_access_begin+0xc/0x60 [ath11k] (P)
++   ath11k_htc_send+0x188/0x3c8 [ath11k]
++   ath11k_wmi_cmd_send+0xc8/0x2f4 [ath11k]
++   ath11k_wmi_send_peer_create_cmd+0x78/0xe0 [ath11k]
++   ath11k_peer_create+0x138/0x500 [ath11k]
++
++Clear the flag once the rings are rebuilt, before ath11k_core_start()
++sends the first HTC message.
++
++Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.9.0.1-02146-QCAHKSWPL_SILICONZ-1
++
++Fixes: d5c65159f289 ("ath11k: driver for Qualcomm IEEE 802.11ax devices")
++Assisted-by: Claude:claude-opus-5-5
++Signed-off-by: Julius Bairaktaris <julius@bairaktaris.de>
++---
++--- a/drivers/net/wireless/ath/ath11k/core.c
+++++ b/drivers/net/wireless/ath/ath11k/core.c
++@@ -2264,6 +2264,8 @@ int ath11k_core_qmi_firmware_ready(struct ath11k_base *ab)
++ 		goto err_firmware_stop;
++ 	}
++ 
+++	clear_bit(ATH11K_FLAG_CRASH_FLUSH, &ab->dev_flags);
+++
++ 	if (ath11k_frame_mode == ATH11K_HW_TXRX_RAW)
++ 		set_bit(ATH11K_FLAG_RAW_MODE, &ab->dev_flags);
++ 
++@@ -2317,8 +2319,6 @@ static int ath11k_core_reconfigure_on_crash(struct ath11k_base *ab)
++ 
++ 	ab->free_vdev_map = (1LL << (ab->num_radios * TARGET_NUM_VDEVS(ab))) - 1;
++ 
++-	clear_bit(ATH11K_FLAG_CRASH_FLUSH, &ab->dev_flags);
++-
++ 	ret = ath11k_core_qmi_firmware_ready(ab);
++ 	if (ret)
++ 		return ret;
+diff --git a/package/kernel/mac80211/patches/ath11k/459-wifi-ath11k-hold-back-WMI-commands-while-the-firmware-restarts.patch b/package/kernel/mac80211/patches/ath11k/459-wifi-ath11k-hold-back-WMI-commands-while-the-firmware-restarts.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..d263f1293fa47e44af12c91ae8375c23d8033517
+--- /dev/null
++++ b/package/kernel/mac80211/patches/ath11k/459-wifi-ath11k-hold-back-WMI-commands-while-the-firmware-restarts.patch
+@@ -0,0 +1,41 @@
++From: Julius Bairaktaris <julius@bairaktaris.de>
++Date: Sun, 18 Oct 2026 23:01:53 +0200
++Subject: [PATCH] wifi: ath11k: hold back WMI commands while the firmware restarts
++
++ath11k_core_restart() brings the firmware up outside mac80211's restart,
++so cfg80211 operations keep sending WMI commands while the HTC services
++reconnect and before the firmware reports ready. These commands crash
++the restarting firmware again, and recovery then fails on the unified
++ready timeout:
++
++  ath11k c000000.wifi: failed to receive wmi unified ready event: -110
++  ath11k c000000.wifi: failed to reconfigure driver on crash recovery
++
++With iw setting the RTS threshold in a loop from the moment the firmware
++stops, the firmware crashed 15, 15 and 11 times on three triggers
++before recovery succeeded. With this patch it crashed once per trigger
++(5 of 5).
++
++Return -ESHUTDOWN for commands from outside the restart worker while
++ATH11K_FLAG_RECOVERY is set. mac80211 replays the configuration when the
++driver restarts the hardware.
++
++Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.9.0.1-02146-QCAHKSWPL_SILICONZ-1
++
++Fixes: d5c65159f289 ("ath11k: driver for Qualcomm IEEE 802.11ax devices")
++Assisted-by: Claude:claude-opus-5-5
++Signed-off-by: Julius Bairaktaris <julius@bairaktaris.de>
++---
++--- a/drivers/net/wireless/ath/ath11k/wmi.c
+++++ b/drivers/net/wireless/ath/ath11k/wmi.c
++@@ -312,6 +312,10 @@ int ath11k_wmi_cmd_send(struct ath11k_pdev_wmi *wmi, struct sk_buff *skb,
++ 
++ 	might_sleep();
++ 
+++	if (test_bit(ATH11K_FLAG_RECOVERY, &ab->dev_flags) &&
+++	    current_work() != &ab->restart_work)
+++		return -ESHUTDOWN;
+++
++ 	if (ab->hw_params.credit_flow) {
++ 		wait_event_timeout(wmi_ab->tx_credits_wq, ({
++ 			ret = ath11k_wmi_cmd_send_nowait(wmi, skb, cmd_id);
+diff --git a/package/kernel/mac80211/patches/ath11k/460-wifi-ath11k-don-t-disable-ext-IRQs-twice.patch b/package/kernel/mac80211/patches/ath11k/460-wifi-ath11k-don-t-disable-ext-IRQs-twice.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..b199ab5a373893d32d6ec411b07dc136370567e1
+--- /dev/null
++++ b/package/kernel/mac80211/patches/ath11k/460-wifi-ath11k-don-t-disable-ext-IRQs-twice.patch
+@@ -0,0 +1,67 @@
++From: Florian Maurer <fmaurer@disroot.org>
++Date: Sun, 1 Nov 2026 11:14:46 +0000
++Subject: [PATCH] wifi: ath11k: don't disable ext IRQs twice
++
++ath11k_core_reconfigure_on_crash() disables the IRQs at the start of
++every firmware recovery and ath11k_core_qmi_firmware_ready() enables
++them again at its end. If a recovery fails, they stay disabled. The
++next recovery disables them again, so the disable depth of the ext
++IRQs goes to two and the single enable_irq() leaves them masked. The
++DP rings would then not be serviced after an otherwise successful
++recovery.
++
++This is the same kind of imbalance as the one fixed for suspend/resume
++by commit e56c9d429ba0 ("wifi: ath11k: fix unbalanced IRQ enable/disable
++during suspend/resume"), but caused by a failed recovery.
++
++NAPI already handles this: it is only disabled if it is enabled. The
++ext IRQs are only enabled together with NAPI, so only disable them if
++NAPI is enabled as well. The pcic ext IRQ code has the same pattern, so
++change it there too. The PCI CE IRQs (ath11k_pcic_ce_irqs_disable())
++can have the same imbalance after a failed recovery; they are not
++changed here. The AHB CE IRQs are not affected, as they are enabled
++and disabled through register bits without a disable depth.
++
++On IPQ8074 (AHB) this shows up when a failed recovery (forced with a
++test patch) is followed by another firmware crash: the recovery reports
++success, but TX completions stop, TX fails with "failed to transmit
++frame -12" and the firmware asserts again repeatedly. With this change
++the same sequence recovered 3 out of 3 times. The pcic change is
++compile-tested only.
++
++Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.9.0.1-02146-QCAHKSWPL_SILICONZ-1
++
++Fixes: f7a74e131d3f ("wifi: ath11k: disable interrupts during firmware crash recovery")
++
++diff --git a/drivers/net/wireless/ath/ath11k/ahb.c b/drivers/net/wireless/ath/ath11k/ahb.c
++index 3a7b59c..c4ad631 100644
++--- a/drivers/net/wireless/ath/ath11k/ahb.c
+++++ b/drivers/net/wireless/ath/ath11k/ahb.c
++@@ -235,9 +235,9 @@ static void __ath11k_ahb_ext_irq_disable(struct ath11k_base *ab)
++ 	for (i = 0; i < ATH11K_EXT_IRQ_GRP_NUM_MAX; i++) {
++ 		struct ath11k_ext_irq_grp *irq_grp = &ab->ext_irq_grp[i];
++ 
++-		ath11k_ahb_ext_grp_disable(irq_grp);
++-
+++		/* The IRQs are only enabled together with NAPI */
++ 		if (irq_grp->napi_enabled) {
+++			ath11k_ahb_ext_grp_disable(irq_grp);
++ 			napi_synchronize(&irq_grp->napi);
++ 			napi_disable(&irq_grp->napi);
++ 			irq_grp->napi_enabled = false;
++diff --git a/drivers/net/wireless/ath/ath11k/pcic.c b/drivers/net/wireless/ath/ath11k/pcic.c
++index fc6e7da..8cc3018 100644
++--- a/drivers/net/wireless/ath/ath11k/pcic.c
+++++ b/drivers/net/wireless/ath/ath11k/pcic.c
++@@ -456,9 +456,9 @@ static void __ath11k_pcic_ext_irq_disable(struct ath11k_base *ab)
++ 	for (i = 0; i < ATH11K_EXT_IRQ_GRP_NUM_MAX; i++) {
++ 		struct ath11k_ext_irq_grp *irq_grp = &ab->ext_irq_grp[i];
++ 
++-		ath11k_pcic_ext_grp_disable(irq_grp);
++-
+++		/* The IRQs are only enabled together with NAPI */
++ 		if (irq_grp->napi_enabled) {
+++			ath11k_pcic_ext_grp_disable(irq_grp);
++ 			napi_synchronize(&irq_grp->napi);
++ 			napi_disable(&irq_grp->napi);
++ 			irq_grp->napi_enabled = false;
+diff --git a/package/kernel/mac80211/patches/ath11k/461-wifi-ath11k-ahb-stop-TX-before-WCSS-is-reset-on-a-firmware-crash.patch b/package/kernel/mac80211/patches/ath11k/461-wifi-ath11k-ahb-stop-TX-before-WCSS-is-reset-on-a-firmware-crash.patch
+new file mode 100644
+index 0000000000000000000000000000000000000000..ddbdab1a06e8d5637edea09b540dc6ddb1811dc7
+--- /dev/null
++++ b/package/kernel/mac80211/patches/ath11k/461-wifi-ath11k-ahb-stop-TX-before-WCSS-is-reset-on-a-firmware-crash.patch
+@@ -0,0 +1,217 @@
++From: Florian Maurer <fmaurer@disroot.org>
++Date: Sun, 1 Nov 2026 11:14:55 +0000
++Subject: [PATCH] wifi: ath11k: ahb: stop TX before WCSS is reset on a firmware
++ crash
++
++On IPQ8074 a firmware crash is handled by remoteproc, which stops the
++remote processor and thereby resets WCSS. ath11k sets
++ATH11K_FLAG_CRASH_FLUSH, which stops the TX paths, only when it handles
++the QMI server exit event. That event results from the glink teardown
++in rproc_stop() and is handled asynchronously, so it can be processed
++after WCSS is already in reset. A TX in that window writes a ring head
++pointer to the reset block, which ends in an asynchronous SError:
++
++  remoteproc remoteproc0: stopped remote processor cd00000.q6v5_wcss
++  SError Interrupt on CPU3, code 0x00000000bf000002 -- SError
++  pc : ath11k_dp_tx+0x45c/0x878 [ath11k]
++  Kernel panic - not syncing: Asynchronous SError Interrupt
++
++remoteproc sends a QCOM_SSR_BEFORE_SHUTDOWN notification with crashed
++set before it stops the processor. Register for it, like ath10k does on
++SNOC, set ATH11K_FLAG_CRASH_FLUSH there and wait with synchronize_rcu()
++for TX paths which have not seen the flag yet. ath11k_dp_tx() is called
++by mac80211 within RCU read-side critical sections or with BHs
++disabled. Check the flag in ath11k_ce_send() again under ce_lock, so
++that this also covers WMI and HTC.
++
++This stops new TX descriptors, for data and for everything sent through
++CE. Ring pointer updates from the RX and TX completion paths (NAPI, CE
++tasklets) are not stopped by this.
++
++A crash during the restart work of an earlier crash, after the QMI
++firmware start and before ath11k_core_qmi_firmware_ready() clears
++ATH11K_FLAG_CRASH_FLUSH after ath11k_dp_alloc(), is not covered yet:
++the flag set by the notifier is cleared again, and CE/HTC sends from
++the restart work can still reach the reset WCSS. mac80211 data queues
++are still stopped at that point. That window is a few milliseconds and
++will be addressed separately.
++
++The SSR subsystem name depends on the remoteproc driver, so add it to
++hw_params. Only IPQ8074 sets it for now. qcom_register_ssr_notifier()
++must be reachable from ath11k_ahb, so add the same Kconfig dependency
++on QCOM_RPROC_COMMON as ath10k SNOC has.
++
++Tested-on: IPQ8074 hw2.0 AHB WLAN.HK.2.9.0.1-02146-QCAHKSWPL_SILICONZ-1
++
++diff --git a/drivers/net/wireless/ath/ath11k/Kconfig b/drivers/net/wireless/ath/ath11k/Kconfig
++index 5ab135e..547f875 100644
++--- a/drivers/net/wireless/ath/ath11k/Kconfig
+++++ b/drivers/net/wireless/ath/ath11k/Kconfig
++@@ -18,6 +18,7 @@ config ATH11K_AHB
++ 	depends on m
++ 	depends on ATH11K
++ 	depends on REMOTEPROC
+++	depends on QCOM_RPROC_COMMON || QCOM_RPROC_COMMON=n
++ 	help
++ 	  This module adds support for AHB bus
++ 
++diff --git a/drivers/net/wireless/ath/ath11k/ahb.c b/drivers/net/wireless/ath/ath11k/ahb.c
++index c4ad631..2c907f5 100644
++--- a/drivers/net/wireless/ath/ath11k/ahb.c
+++++ b/drivers/net/wireless/ath/ath11k/ahb.c
++@@ -20,6 +20,7 @@
++ #include "pcic.h"
++ #include <linux/soc/qcom/smem.h>
++ #include <linux/soc/qcom/smem_state.h>
+++#include <linux/remoteproc/qcom_rproc.h>
++ 
++ static const struct of_device_id ath11k_ahb_of_match[] = {
++ 	/* TODO: Should we change the compatible string to something similar
++@@ -801,6 +802,60 @@ static const struct ath11k_hif_ops ath11k_ahb_hif_ops_wcn6750 = {
++ 	.ce_irq_disable = ath11k_pci_disable_ce_irqs_except_wake_irq,
++ };
++ 
+++static int ath11k_ahb_ssr_notifier(struct notifier_block *nb,
+++				   unsigned long action, void *data)
+++{
+++	struct ath11k_ahb *ab_ahb = container_of(nb, struct ath11k_ahb, ssr_nb);
+++	struct ath11k_base *ab = container_of((void *)ab_ahb, struct ath11k_base,
+++					      drv_priv);
+++	struct qcom_ssr_notify_data *notify = data;
+++
+++	if (action != QCOM_SSR_BEFORE_SHUTDOWN || !notify->crashed)
+++		return NOTIFY_DONE;
+++
+++	/* WCSS can be reset before the QMI server exit event sets the flag.
+++	 * ath11k_dp_tx() runs in RCU read-side sections or with BHs disabled
+++	 * and ath11k_ce_send() checks the flag under ce_lock, so after
+++	 * synchronize_rcu() no new TX descriptors are queued.
+++	 */
+++	ath11k_dbg(ab, ATH11K_DBG_AHB, "firmware crashed, stopping tx\n");
+++	set_bit(ATH11K_FLAG_CRASH_FLUSH, &ab->dev_flags);
+++	synchronize_rcu();
+++
+++	return NOTIFY_OK;
+++}
+++
+++static void ath11k_ahb_register_ssr_notifier(struct ath11k_base *ab)
+++{
+++	struct ath11k_ahb *ab_ahb = ath11k_ahb_priv(ab);
+++	void *handle;
+++
+++	if (!ab->hw_params.ssr_name)
+++		return;
+++
+++	ab_ahb->ssr_nb.notifier_call = ath11k_ahb_ssr_notifier;
+++	handle = qcom_register_ssr_notifier(ab->hw_params.ssr_name,
+++					    &ab_ahb->ssr_nb);
+++	if (IS_ERR(handle)) {
+++		ath11k_warn(ab, "failed to register ssr notifier: %ld\n",
+++			    PTR_ERR(handle));
+++		return;
+++	}
+++
+++	ab_ahb->ssr_handle = handle;
+++}
+++
+++static void ath11k_ahb_unregister_ssr_notifier(struct ath11k_base *ab)
+++{
+++	struct ath11k_ahb *ab_ahb = ath11k_ahb_priv(ab);
+++
+++	if (!ab_ahb->ssr_handle)
+++		return;
+++
+++	qcom_unregister_ssr_notifier(ab_ahb->ssr_handle, &ab_ahb->ssr_nb);
+++	ab_ahb->ssr_handle = NULL;
+++}
+++
++ static int ath11k_core_get_rproc(struct ath11k_base *ab)
++ {
++ 	struct ath11k_ahb *ab_ahb = ath11k_ahb_priv(ab);
++@@ -1203,6 +1258,8 @@ static int ath11k_ahb_probe(struct platform_device *pdev)
++ 		goto err_ce_free;
++ 	}
++ 
+++	ath11k_ahb_register_ssr_notifier(ab);
+++
++ 	ret = ath11k_core_init(ab);
++ 	if (ret) {
++ 		ath11k_err(ab, "failed to init core: %d\n", ret);
++@@ -1220,6 +1277,7 @@ static int ath11k_ahb_probe(struct platform_device *pdev)
++ 	return 0;
++ 
++ err_ce_free:
+++	ath11k_ahb_unregister_ssr_notifier(ab);
++ 	ath11k_ce_free_pipes(ab);
++ 
++ err_hal_srng_deinit:
++@@ -1261,6 +1319,7 @@ static void ath11k_ahb_free_resources(struct ath11k_base *ab)
++ {
++ 	struct platform_device *pdev = ab->pdev;
++ 
+++	ath11k_ahb_unregister_ssr_notifier(ab);
++ 	ath11k_ahb_free_irq(ab);
++ 	ath11k_hal_srng_deinit(ab);
++ 	ath11k_ahb_release_smp2p_handle(ab);
++diff --git a/drivers/net/wireless/ath/ath11k/ahb.h b/drivers/net/wireless/ath/ath11k/ahb.h
++index 415ddfd..1ad0cdb 100644
++--- a/drivers/net/wireless/ath/ath11k/ahb.h
+++++ b/drivers/net/wireless/ath/ath11k/ahb.h
++@@ -23,6 +23,8 @@ struct ath11k_base;
++ 
++ struct ath11k_ahb {
++ 	struct rproc *tgt_rproc;
+++	struct notifier_block ssr_nb;
+++	void *ssr_handle;
++ 	struct {
++ 		struct device *dev;
++ 		struct iommu_domain *iommu_domain;
++diff --git a/drivers/net/wireless/ath/ath11k/ce.c b/drivers/net/wireless/ath/ath11k/ce.c
++index a7a1636..7bbd32b 100644
++--- a/drivers/net/wireless/ath/ath11k/ce.c
+++++ b/drivers/net/wireless/ath/ath11k/ce.c
++@@ -746,6 +746,12 @@ int ath11k_ce_send(struct ath11k_base *ab, struct sk_buff *skb, u8 pipe_id,
++ 
++ 	spin_lock_bh(&ab->ce.ce_lock);
++ 
+++	/* Check again with BHs disabled, see ath11k_ahb_ssr_notifier() */
+++	if (test_bit(ATH11K_FLAG_CRASH_FLUSH, &ab->dev_flags)) {
+++		ret = -ESHUTDOWN;
+++		goto err_ce_unlock;
+++	}
+++
++ 	write_index = pipe->src_ring->write_index;
++ 	nentries_mask = pipe->src_ring->nentries_mask;
++ 
++@@ -792,6 +798,7 @@ int ath11k_ce_send(struct ath11k_base *ab, struct sk_buff *skb, u8 pipe_id,
++ err_unlock:
++ 	spin_unlock_bh(&srng->lock);
++ 
+++err_ce_unlock:
++ 	spin_unlock_bh(&ab->ce.ce_lock);
++ 
++ 	return ret;
++diff --git a/drivers/net/wireless/ath/ath11k/core.c b/drivers/net/wireless/ath/ath11k/core.c
++index c171e52..1abc93a 100644
++--- a/drivers/net/wireless/ath/ath11k/core.c
+++++ b/drivers/net/wireless/ath/ath11k/core.c
++@@ -92,6 +92,7 @@ static const struct ath11k_hw_params ath11k_hw_params[] = {
++ 		.coldboot_cal_mm = true,
++ 		.coldboot_cal_ftm = true,
++ 		.cbcal_restart_fw = true,
+++		.ssr_name = "q6wcss",
++ 		.fw_mem_mode = 0,
++ 		.num_vdevs = 16 + 1,
++ 		.num_peers = 512,
++diff --git a/drivers/net/wireless/ath/ath11k/hw.h b/drivers/net/wireless/ath/ath11k/hw.h
++index 52d9f4c..226f4fa 100644
++--- a/drivers/net/wireless/ath/ath11k/hw.h
+++++ b/drivers/net/wireless/ath/ath11k/hw.h
++@@ -190,6 +190,7 @@ struct ath11k_hw_params {
++ 	bool coldboot_cal_mm;
++ 	bool coldboot_cal_ftm;
++ 	bool cbcal_restart_fw;
+++	const char *ssr_name;
++ 	int fw_mem_mode;
++ 	u32 num_vdevs;
++ 	u32 num_peers;
