@@ -1,0 +1,41 @@
+From 0fb979c257282ed0e6feab3063852baed3ca4326 Mon Sep 17 00:00:00 2001
+From: Florian Maurer <fmaurer@disroot.org>
+Date: Wed, 11 Nov 2026 11:20:56 +0000
+Subject: [PATCH] uradvd: build v2026.1.x-parker branch for parker firmwares
+
+Builds uradvd from the freifunk-gluon/uradvd v2026.1.x-parker branch,
+which adds the PREF64 option (RFC 8781) for 464XLAT NAT64 prefix
+discovery and --adv-link-mtu to announce the tunnel link MTU in router
+advertisements. Parker nodes on tiny devices need both, as uradvd
+replaces radvd there.
+
+Drop this once the branches are merged upstream and the pin updated.
+---
+ net/uradvd/Makefile | 8 ++++----
+ 1 file changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/net/uradvd/Makefile b/net/uradvd/Makefile
+index 093c916e0..7ff28e19c 100644
+--- a/net/uradvd/Makefile
++++ b/net/uradvd/Makefile
+@@ -1,13 +1,13 @@
+ include $(TOPDIR)/rules.mk
+ 
+ PKG_NAME:=uradvd
+-PKG_RELEASE:=1
++PKG_RELEASE:=2
+ 
+ PKG_SOURCE_PROTO:=git
+ PKG_SOURCE_URL=https://github.com/freifunk-gluon/uradvd.git
+-PKG_SOURCE_DATE:=2025-09-20
+-PKG_SOURCE_VERSION:=1e64364d323acb8c71285a6fb85d384334e7007d
+-PKG_MIRROR_HASH:=06be08eef717540709484a21296735757721180ab566ba21c2958cdc92ea0f85
++PKG_SOURCE_DATE:=2026-11-11
++PKG_SOURCE_VERSION:=3989f4f28a246ac4dedc88500d769b04bcde21fd
++PKG_MIRROR_HASH:=skip
+ 
+ PKG_MAINTAINER:=Moritz Warning <moritzwarning@web.de>
+ PKG_LICENSE:=BSD-2-Clause
+-- 
+2.47.3
+
