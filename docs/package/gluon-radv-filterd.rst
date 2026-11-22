@@ -44,6 +44,33 @@ filtered anyway and reach neither the node nor any other client. Therefore the
 use of local routers is not possible as long as the package
 ``gluon-radv-filterd`` is used.
 
+Redirecting to the router of the source prefix
+----------------------------------------------
+
+This feature is disabled by default and does not change the behaviour described
+above.
+
+If every router announces its own /64 prefix on the same link, a client may keep
+an address from router A while router B is its selected default router.
+Packets from that client then leave the mesh through a node that is not
+responsible for the source prefix. With the redirect enabled, every router
+advertisement is also parsed for the first /64 prefix information option.
+For every router with a known prefix, a rule in the ``nat`` table of
+``ebtables`` rewrites the destination MAC address of global unicast IPv6 packets
+that are sourced from router A's prefix, but addressed to the MAC address of
+another router, to router A (``dnat``). The rules are rebuilt whenever the set
+of routers or prefixes changes and are flushed when no router is left.
+
+A package enables the redirect by installing the (empty) file
+``/lib/gluon/features/radv-filterd-redirect``. The init script then starts the
+daemon with ``-r`` and the ebtables configuration creates the ``nat`` chains
+``REDIRECT_FILTER`` and ``REDIRECT`` together with their jumps. The daemon
+flushes and manages these chains.
+
+The redirect needs the ``dnat`` target of ``ebtables-tiny``, which is provided
+by the ``ebt-nat`` extension and not part of the default ``ebtables-tiny``
+build.
+
 respondd module
 ---------------
 

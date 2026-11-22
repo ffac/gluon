@@ -30,6 +30,8 @@
 #include <netinet/in.h>
 #include <netinet/ip6.h>
 
+#include <arpa/inet.h>
+
 #include <netlink/netlink.h>
 #include <netlink/genl/genl.h>
 #include <netlink/genl/ctrl.h>
@@ -44,6 +46,10 @@
 // become the preferred routers until the metrics have been rechecked)
 // Also, the first update will take at least this long
 #define MIN_INTERVAL 15
+// Rebuild the redirect chains after this time even if nothing changed. The check
+// only runs every MIN_INTERVAL, so the chains are restored within 60 seconds at
+// the latest.
+#define REDIRECT_RESYNC_INTERVAL 45
 
 // Remember the originator of a router for at most this period of time (in
 // seconds). Re-read it from the transtable afterwards.
@@ -88,13 +94,23 @@ struct router {
 	struct timespec eol;
 	struct ether_addr originator;
 	uint32_t metric;
+	bool has_prefix;
+	struct in6_addr prefix;
 };
 
 static struct global {
 	int sock;
+	unsigned int ifindex;
 	struct router *routers;
 	const char *mesh_iface;
 	const char *chain;
+	/* redirect IPv6 packets to the router owning the source prefix */
+	bool redirect;
+	/* signature of the router/prefix set the redirect chains were built
+	 * for, and the time of the last rebuild */
+	uint64_t redirect_sig;
+	struct timespec redirect_synced;
+	bool redirect_dirty;
 	uint32_t max_metric;
 	uint32_t hysteresis_thresh;
 	struct router *best_router;
@@ -159,6 +175,16 @@ static void cleanup(void) {
 				{ "ebtables-tiny", "-A", G.chain, "-j", "ACCEPT", NULL }))
 			DEBUG_MSG("warning: adding new rule to ebtables chain %s failed", G.chain);
 	}
+
+	if (G.redirect) {
+		if (fork_execvp_timeout(&timeout, "ebtables-tiny", (const char *[])
+				{ "ebtables-tiny", "-t", "nat", "-F", "REDIRECT_FILTER", NULL}))
+			DEBUG_MSG("warning: flushing ebtables nat chain REDIRECT_FILTER failed");
+
+		if (fork_execvp_timeout(&timeout, "ebtables-tiny", (const char *[])
+				{ "ebtables-tiny", "-t", "nat", "-F", "REDIRECT", NULL}))
+			DEBUG_MSG("warning: flushing ebtables nat chain REDIRECT failed");
+	}
 }
 
 static void usage(const char *msg) {
@@ -166,10 +192,15 @@ static void usage(const char *msg) {
 		fprintf(stderr, "ERROR: %s\n\n", msg);
 	}
 	fprintf(stderr,
-		"Usage: %s [-m <mesh_iface>] [-t <thresh>] -c <chain> -i <iface>\n\n"
+		"Usage: %s [-m <mesh_iface>] [-r] [-t <thresh>] -c <chain> -i <iface>\n\n"
 		"  -m <mesh_iface>  B.A.T.M.A.N. advanced mesh interface used to get metric\n"
 		"                   information (TQ or throughput) for the available gateways.\n"
 		"                   Default: bat0\n"
+		"  -r               Redirect IPv6 packets to the router whose advertised prefix\n"
+		"                   matches their source address. Requires the ebtables nat\n"
+		"                   chains REDIRECT_FILTER and REDIRECT to exist and will\n"
+		"                   flush them. Only useful if routers announce different\n"
+		"                   prefixes on the same link.\n"
 		"  -t <thresh>      Minimum metric difference required to switch the gateway.\n"
 		"                   The unit depends on the routing algorithm in use:\n"
 		"                     BATMAN_IV: TQ points, 0-255   (e.g. 20 ~ 8%% of max)\n"
@@ -207,6 +238,9 @@ static inline void warn_errno(const char *message) {
 
 static int init_packet_socket(unsigned int ifindex) {
 	struct sock_filter radv_filter_code[] = {
+		// the socket may receive all protocols, check that this is an IPv6 packet
+		BPF_STMT(BPF_LD|BPF_H|BPF_ABS, SKF_AD_OFF + SKF_AD_PROTOCOL),
+		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, ETH_P_IPV6, 0, 9),
 		// check that this is an ICMPv6 packet
 		BPF_STMT(BPF_LD|BPF_B|BPF_ABS, offsetof(struct ip6_hdr, ip6_nxt)),
 		BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K, IPPROTO_ICMPV6, 0, 7),
@@ -239,7 +273,9 @@ static int init_packet_socket(unsigned int ifindex) {
 
 	struct sockaddr_ll bind_iface = {
 		.sll_family = AF_PACKET,
-		.sll_protocol = htons(ETH_P_IPV6),
+		/* the redirect needs to see the node's own RAs (PACKET_OUTGOING) too,
+		 * which are only delivered to sockets bound to ETH_P_ALL */
+		.sll_protocol = htons(G.redirect ? ETH_P_ALL : ETH_P_IPV6),
 		.sll_ifindex = ifindex,
 	};
 	ret = bind(sock, (struct sockaddr *)&bind_iface, sizeof(bind_iface));
@@ -251,18 +287,19 @@ static int init_packet_socket(unsigned int ifindex) {
 
 static void parse_cmdline(int argc, char *argv[]) {
 	int c;
-	unsigned int ifindex;
 	unsigned long int threshold;
 	char *endptr;
-	while ((c = getopt(argc, argv, "c:hi:m:t:")) != -1) {
+	while ((c = getopt(argc, argv, "c:hi:m:rt:")) != -1) {
 		switch (c) {
+			case 'r':
+				G.redirect = true;
+				break;
 			case 'i':
-				if (G.sock >= 0)
+				if (G.ifindex != 0)
 					usage("-i given more than once");
-				ifindex = if_nametoindex(optarg);
-				if (ifindex == 0)
+				G.ifindex = if_nametoindex(optarg);
+				if (G.ifindex == 0)
 					exit_errmsg("Unknown interface: %s", optarg);
-				G.sock = init_packet_socket(ifindex);
 				break;
 			case 'm':
 				G.mesh_iface = optarg;
@@ -322,17 +359,51 @@ static struct router *router_add(const struct ether_addr *mac) {
 	return router;
 }
 
-static void router_update(const struct ether_addr *mac, uint16_t timeout) {
+/* Find the first prefix information option announcing a /64 prefix. The
+ * options are untrusted data from the mesh.
+ */
+static bool find_prefix(const uint8_t *ptr, size_t len, struct in6_addr *prefix) {
+	while (len >= 8) {
+		size_t o_len = (size_t)ptr[1] << 3;
+
+		// a zero length is invalid and would never advance
+		if (o_len == 0 || o_len > len)
+			return false;
+
+		if (ptr[0] == ND_OPT_PREFIX_INFORMATION) {
+			const struct nd_opt_prefix_info *o_pi = (const struct nd_opt_prefix_info *)ptr;
+
+			if (o_len < sizeof(*o_pi))
+				return false;
+
+			if (o_pi->nd_opt_pi_prefix_len == 64) {
+				// only keep the /64, ignore host bits
+				memset(prefix, 0, sizeof(*prefix));
+				memcpy(prefix, &o_pi->nd_opt_pi_prefix, 8);
+				return true;
+			}
+		}
+
+		ptr += o_len;
+		len -= o_len;
+	}
+
+	return false;
+}
+
+static struct router *router_update(const struct ether_addr *mac, uint16_t timeout) {
 	struct router *router;
 
 	router = router_find_src(mac);
 	if (!router)
 		router = router_add(mac);
 	if (!router)
-		return;
+		return NULL;
 
 	clock_gettime(CLOCK_MONOTONIC, &router->eol);
 	router->eol.tv_sec += timeout;
+
+	return router;
 }
 
 static void handle_ra(int sock) {
@@ -340,22 +411,44 @@ static void handle_ra(int sock) {
 	struct ether_addr mac;
 	socklen_t addr_size = sizeof(src);
 	ssize_t len;
+	size_t pkt_len;
 	struct {
-		struct ip6_hdr ip6;
-		struct nd_router_advert ra;
+		struct {
+			struct ip6_hdr ip6;
+			struct nd_router_advert ra;
+		} hdr;
+		uint8_t options[128];
 	} pkt;
+	struct router *router;
+	struct in6_addr prefix;
+	char addr_str[INET6_ADDRSTRLEN];
 
 	len = recvfrom(sock, &pkt, sizeof(pkt), 0, (struct sockaddr *)&src, &addr_size);
 	CHECK(len >= 0);
 
 	// BPF already checked that this is an ICMPv6 RA of a default router
-	CHECK((size_t)len >= sizeof(pkt));
-	CHECK(ntohs(pkt.ip6.ip6_plen) + sizeof(struct ip6_hdr) >= sizeof(pkt));
+	CHECK((size_t)len >= sizeof(pkt.hdr));
+	CHECK(ntohs(pkt.hdr.ip6.ip6_plen) + sizeof(struct ip6_hdr) >= sizeof(pkt.hdr));
 
 	memcpy(&mac, src.sll_addr, sizeof(mac));
 	DEBUG_MSG("received valid RA from " F_MAC, F_MAC_VAR(mac));
 
-	router_update(&mac, ntohs(pkt.ra.nd_ra_router_lifetime));
+	router = router_update(&mac, ntohs(pkt.hdr.ra.nd_ra_router_lifetime));
+	if (!router || !G.redirect)
+		return;
+
+	// the options end at the end of the received data or the IPv6 payload
+	pkt_len = ntohs(pkt.hdr.ip6.ip6_plen) + sizeof(struct ip6_hdr);
+	if (pkt_len > (size_t)len)
+		pkt_len = len;
+
+	if (find_prefix(pkt.options, pkt_len - sizeof(pkt.hdr), &prefix)) {
+		router->prefix = prefix;
+		router->has_prefix = true;
+
+		CHECK(inet_ntop(AF_INET6, &router->prefix, addr_str, sizeof(addr_str)));
+		DEBUG_MSG("prefix: %s", addr_str);
+	}
 
 check_failed:
 	return;
@@ -614,6 +707,107 @@ static void update_metrics(void) {
 	}
 }
 
+static uint64_t redirect_signature(void) {
+	struct router *router;
+	uint64_t sig = 14695981039346656037ULL;
+	const uint8_t *p;
+	size_t i;
+
+	foreach(router, G.routers) {
+		if (!router->has_prefix)
+			continue;
+
+		p = (const uint8_t *)&router->src;
+		for (i = 0; i < sizeof(router->src); i++)
+			sig = (sig ^ p[i]) * 1099511628211ULL;
+
+		p = (const uint8_t *)&router->prefix;
+		for (i = 0; i < sizeof(router->prefix); i++)
+			sig = (sig ^ p[i]) * 1099511628211ULL;
+	}
+
+	return sig;
+}
+
+/* Rebuild the redirect chains from scratch. Other components (gluon-ebtables)
+ * re-create the nat chains behind our back, and rules of expired routers or
+ * changed prefixes have to go, so the state is never patched incrementally. */
+static void update_redirect(void) {
+	struct router *router;
+	struct timespec now, diff;
+	struct timespec timeout = {
+		.tv_nsec = EBTABLES_TIMEOUT,
+	};
+	uint64_t sig = redirect_signature();
+
+	clock_gettime(CLOCK_MONOTONIC, &now);
+
+	if (!G.redirect_dirty && sig == G.redirect_sig &&
+			!timespec_diff(&now, &G.redirect_synced, &diff))
+		return;
+
+	// a failure below leaves the dirty flag set, the next update retries
+	G.redirect_dirty = true;
+
+	if (fork_execvp_timeout(&timeout, "ebtables-tiny", (const char *[])
+			{ "ebtables-tiny", "-t", "nat", "-F", "REDIRECT_FILTER", NULL})) {
+		error_message(0, 0, "warning: flushing ebtables nat chain REDIRECT_FILTER failed");
+		return;
+	}
+
+	if (fork_execvp_timeout(&timeout, "ebtables-tiny", (const char *[])
+			{ "ebtables-tiny", "-t", "nat", "-F", "REDIRECT", NULL})) {
+		error_message(0, 0, "warning: flushing ebtables nat chain REDIRECT failed");
+		return;
+	}
+
+	G.redirect_dirty = false;
+
+	foreach(router, G.routers) {
+		char mac[F_MAC_LEN + 1];
+		char addr[INET6_ADDRSTRLEN];
+		char prefix[INET6_ADDRSTRLEN + 3];
+
+		if (!router->has_prefix)
+			continue;
+
+		snprintf(mac, sizeof(mac), F_MAC, F_MAC_VAR(router->src));
+
+		if (inet_ntop(AF_INET6, &router->prefix, addr, sizeof(addr)) == NULL) {
+			error_message(0, 0, "warning: failed to format prefix");
+			continue;
+		}
+		snprintf(prefix, sizeof(prefix), "%s/64", addr);
+
+		if (fork_execvp_timeout(&timeout, "ebtables-tiny", (const char *[])
+			{ "ebtables-tiny", "-t", "nat", "-A", "REDIRECT",
+			"-p", "IPv6",
+			"--ip6-source", prefix,
+			"--ip6-destination", "!", prefix,
+			"-d", "!",  mac,
+			"-j", "dnat",
+			"--to-destination", mac,
+			NULL })) {
+			error_message(0, 0, "warning: adding new rule to ebtables chain REDIRECT failed");
+			G.redirect_dirty = true;
+			continue;
+		}
+
+		if (fork_execvp_timeout(&timeout, "ebtables-tiny", (const char *[])
+			{ "ebtables-tiny", "-t", "nat", "-A", "REDIRECT_FILTER",
+			"-d", mac,
+			"-j", "REDIRECT",
+			NULL })) {
+			error_message(0, 0, "warning: adding new rule to ebtables chain REDIRECT_FILTER failed");
+			G.redirect_dirty = true;
+		}
+	}
+
+	G.redirect_sig = sig;
+	G.redirect_synced = now;
+	G.redirect_synced.tv_sec += REDIRECT_RESYNC_INTERVAL;
+}
+
 static int fork_execvp_timeout(struct timespec *timeout, const char *file, const char *const argv[]) {
 	int ret;
 	pid_t child;
@@ -755,11 +949,14 @@ int main(int argc, char *argv[]) {
 	G.sock = -1;
 	parse_cmdline(argc, argv);
 
-	if (G.sock < 0)
+	if (G.ifindex == 0)
 		usage("No interface set!");
 
 	if (G.chain == NULL)
 		usage("No chain set!");
+
+	// needs to come after parse_cmdline(): the bind depends on -r
+	G.sock = init_packet_socket(G.ifindex);
 
 	if (batadv_genl_get_algo(G.mesh_iface, &G.algo) < 0)
 		exit_errmsg("Failed to detect batman-adv routing algorithm on %s", G.mesh_iface);
@@ -799,6 +996,10 @@ int main(int argc, char *argv[]) {
 				timespec_diff(&now, &next_update, &diff)) {
 			expire_routers();
 
+			// the redirect rules follow the router list, which may have shrunk
+			if (G.redirect)
+				update_redirect();
+
 			// all routers could have expired, check again
 			if (G.routers != NULL) {
 				if(timespec_diff(&now, &next_invalidation, &diff)) {
@@ -814,6 +1015,10 @@ int main(int argc, char *argv[]) {
 				next_update = now;
 				next_update.tv_sec += MIN_INTERVAL;
 			}
+		} else if (G.routers == NULL && G.redirect) {
+			// no router left: flush stale redirect rules once and keep
+			// resyncing them
+			update_redirect();
 		}
 	}
 
