@@ -1,0 +1,39 @@
+From 8f9ab17d9f4ef343087230ce33c65f5a2292bb1b Mon Sep 17 00:00:00 2001
+From: Jan Luebbe <sho@stratum0.net>
+Date: Wed, 19 Jul 2023 20:54:06 +0200
+Subject: [PATCH] ebtables-tiny: fix lockfile function
+
+flock without LOCK_NB never returns on a conflicting lock, so this
+function doesn't conform to its comment.
+
+Also close the lock file on error, so we can keep retrying.
+
+Signed-off-by: Jan Luebbe <sho@stratum0.net>
+---
+ net/ebtables-tiny/src/libebtc.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/net/ebtables-tiny/src/libebtc.c b/net/ebtables-tiny/src/libebtc.c
+index d512f88..74b863d 100644
+--- a/net/ebtables-tiny/src/libebtc.c
++++ b/net/ebtables-tiny/src/libebtc.c
+@@ -127,6 +127,7 @@ void ebt_list_extensions()
+ static int lock_file()
+ {
+ 	int fd, try = 0;
++	int ret = 0;
+ 
+ retry:
+ 	fd = open(LOCKFILE, O_CREAT, 00600);
+@@ -136,7 +137,10 @@ retry:
+ 		try = 1;
+ 		goto retry;
+ 	}
+-	return flock(fd, LOCK_EX);
++	ret = flock(fd, LOCK_EX | LOCK_NB);
++	if (ret)
++		close(fd);
++	return ret;
+ }
+ 
+ /* Get the table from the kernel or from a binary file */

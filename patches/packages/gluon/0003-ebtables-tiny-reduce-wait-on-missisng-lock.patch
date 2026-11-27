@@ -1,0 +1,56 @@
+From 99c3c4a1c231493e65ba4a09a21d055676b65da8 Mon Sep 17 00:00:00 2001
+From: Chris Fiege <chris@tinyhost.de>
+Date: Sun, 4 Aug 2024 12:08:43 +0200
+Subject: [PATCH] ebtables-tiny: reduce wait on missisng lock
+
+With the fix form Shoragan to actually wait if a lock-file is present,
+retries would only be done every second.
+But: Interacting with ebtables should not take that long.
+So we can drastically reduce the waiting time here.
+
+With this change will will only wait 50ms (instead of 1s).
+To not spam the log too much if a lock is kept for longer (or the other
+process has more luck locking) this change also reduces the logging
+rate.
+
+Signed-off-by: Chris Fiege <chris@tinyhost.de>
+---
+ net/ebtables-tiny/src/libebtc.c | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/net/ebtables-tiny/src/libebtc.c b/net/ebtables-tiny/src/libebtc.c
+index 74b863d..db301aa 100644
+--- a/net/ebtables-tiny/src/libebtc.c
++++ b/net/ebtables-tiny/src/libebtc.c
+@@ -36,6 +36,7 @@
+ #include <sys/stat.h>
+ #include <sys/types.h>
+ #include <errno.h>
++#include <time.h>
+ 
+ static void decrease_chain_jumps(struct ebt_u_replace *replace);
+ static int iterate_entries(struct ebt_u_replace *replace, int type);
+@@ -147,6 +148,8 @@ retry:
+ int ebt_get_kernel_table(struct ebt_u_replace *replace)
+ {
+ 	int ret;
++	struct timespec req = {0};
++	int errcount = 0;
+ 
+ 	if (!ebt_find_table(replace->name)) {
+ 		ebt_print_error("Bad table name '%s'", replace->name);
+@@ -159,8 +162,12 @@ int ebt_get_kernel_table(struct ebt_u_replace *replace)
+ 			 * this file locking is disabled by default. */
+ 			ebt_print_error2("Unable to create lock file "LOCKFILE);
+ 		}
+-		fprintf(stderr, "Trying to obtain lock %s\n", LOCKFILE);
+-		sleep(1);
++		if (errcount++ % 20 == 0) {
++			fprintf(stderr, "Trying to obtain lock %s\n", LOCKFILE);
++		}
++		req.tv_sec = 0;
++		req.tv_nsec = 50*1000*1000; //50ms
++		nanosleep(&req, NULL);
+ 	}
+ 	/* Get the kernel's information */
+ 	if (ebt_get_table(replace))
